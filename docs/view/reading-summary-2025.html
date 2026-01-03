@@ -99,30 +99,32 @@
     }
 
     /* Viewer */
-    .viewer {
-      position: relative;
-      width: 100%;
-      height: min(78vh, 900px);
-      background: #0f0f14;
-      overflow: auto;              /* enables panning via scroll when zoomed */
-      touch-action: pan-x pan-y;   /* allows mobile panning */
-      cursor: zoom-in;
-    }
+  .viewer {
+    position: relative;
+    width: 100%;
+    height: min(78vh, 900px);
+    background: #0f0f14;
+    overflow: auto;
+    touch-action: pan-x pan-y;
+    cursor: zoom-in;
+  }
 
-    .stage {
-      position: relative;
-      transform-origin: 0 0; /* we control origin via scroll positioning */
-      width: fit-content;
-      height: fit-content;
-    }
+  .stage {
+    position: relative;
+    transform-origin: 0 0;
+    width: fit-content;
+    height: fit-content;
+  }
 
-    img {
-      display: block;
-      max-width: none; /* important: let it exceed container when zoomed */
-      height: auto;
-      user-select: none;
-      -webkit-user-drag: none;
-    }
+/* IMPORTANT: start by fitting the image visually, not at native size */
+  img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
 
     /* Footer */
     .footer {
@@ -188,43 +190,142 @@
     </div>
   </div>
 
-  <script>
-    // --- Config ---
-    const MIN_ZOOM = 1;
-    const MAX_ZOOM = 6;
-    const STEP = 1.25;
+ <script>
+  // User zoom (multiplier on top of "fit to viewer")
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 8;
+  const STEP = 1.25;
 
-    const viewer = document.getElementById('viewer');
-    const stage  = document.getElementById('stage');
-    const img    = document.getElementById('img');
+  const viewer = document.getElementById('viewer');
+  const stage  = document.getElementById('stage');
+  const img    = document.getElementById('img');
 
-    const zoomInBtn  = document.getElementById('zoomIn');
-    const zoomOutBtn = document.getElementById('zoomOut');
-    const resetBtn   = document.getElementById('reset');
-    const zoomLabel  = document.getElementById('zoomLabel');
+  const zoomInBtn  = document.getElementById('zoomIn');
+  const zoomOutBtn = document.getElementById('zoomOut');
+  const resetBtn   = document.getElementById('reset');
+  const zoomLabel  = document.getElementById('zoomLabel');
 
-    let zoom = 1;
+  let userZoom = 1;     // what you control with buttons
+  let fitScale = 1;     // computed so whole image fits initially
 
-    function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+  function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
-    function applyZoom() {
-      stage.style.transform = `scale(${zoom})`;
-      zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
-      viewer.style.cursor = zoom > 1 ? 'grab' : 'zoom-in';
-    }
+  function computeFitScale() {
+    // We want to fit the entire image inside the viewer area.
+    // naturalWidth/Height are the true pixel dimensions of the image.
+    const vw = viewer.clientWidth;
+    const vh = viewer.clientHeight;
 
-    // Keep the point under the cursor roughly stable when changing zoom.
-    function zoomAt(clientX, clientY, newZoom) {
-      const rect = viewer.getBoundingClientRect();
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
 
-      // Cursor position within the viewer's scrollable area (in viewport pixels)
-      const xInViewer = clientX - rect.left;
-      const yInViewer = clientY - rect.top;
+    if (!nw || !nh || !vw || !vh) return 1;
 
-      // Current scroll offsets (in CSS pixels)
-      const scrollLeft = viewer.scrollLeft;
-      const scrollTop  = viewer.scrollTop;
+    // Fit both directions, choose the limiting dimension.
+    const scaleX = vw / nw;
+    const scaleY = vh / nh;
 
-      // Convert to "stage coordinates" (pre-zoom) by dividing by current zoom
-      const xOnStage = (scrollLeft + xInViewer) / zoom;
-      const yO
+    // Don't upscale above 1 by default (keeps things crisp).
+    return Math.min(1, scaleX, scaleY);
+  }
+
+  function applyScale() {
+    const effective = fitScale * userZoom;
+    stage.style.transform = `scale(${effective})`;
+    zoomLabel.textContent = `${Math.round(userZoom * 100)}%`;
+    viewer.style.cursor = userZoom > 1 ? 'grab' : 'zoom-in';
+  }
+
+  function centerImage() {
+    // After scaling, center the content by scrolling to the middle.
+    // stage's bounding box in scaled space is hard to query directly,
+    // but we can approximate using natural size * effective scale.
+    const effective = fitScale * userZoom;
+
+    const contentW = img.naturalWidth * effective;
+    const contentH = img.naturalHeight * effective;
+
+    const targetLeft = Math.max(0, (contentW - viewer.clientWidth) / 2);
+    const targetTop  = Math.max(0, (contentH - viewer.clientHeight) / 2);
+
+    viewer.scrollLeft = targetLeft;
+    viewer.scrollTop  = targetTop;
+  }
+
+  // Keep point under cursor stable while zooming
+  function zoomAt(clientX, clientY, newUserZoom) {
+    const rect = viewer.getBoundingClientRect();
+    const xInViewer = clientX - rect.left;
+    const yInViewer = clientY - rect.top;
+
+    const oldEffective = fitScale * userZoom;
+
+    const scrollLeft = viewer.scrollLeft;
+    const scrollTop  = viewer.scrollTop;
+
+    const xOnStage = (scrollLeft + xInViewer) / oldEffective;
+    const yOnStage = (scrollTop  + yInViewer) / oldEffective;
+
+    userZoom = clamp(newUserZoom, MIN_ZOOM, MAX_ZOOM);
+    const newEffective = fitScale * userZoom;
+
+    stage.style.transform = `scale(${newEffective})`;
+    zoomLabel.textContent = `${Math.round(userZoom * 100)}%`;
+    viewer.style.cursor = userZoom > 1 ? 'grab' : 'zoom-in';
+
+    viewer.scrollLeft = xOnStage * newEffective - xInViewer;
+    viewer.scrollTop  = yOnStage * newEffective - yInViewer;
+  }
+
+  function resetView() {
+    userZoom = 1;
+    fitScale = computeFitScale();
+    applyScale();
+    centerImage();
+  }
+
+  // Buttons
+  zoomInBtn.addEventListener('click', () => {
+    const rect = viewer.getBoundingClientRect();
+    zoomAt(rect.left + rect.width/2, rect.top + rect.height/2, userZoom * STEP);
+  });
+
+  zoomOutBtn.addEventListener('click', () => {
+    const rect = viewer.getBoundingClientRect();
+    zoomAt(rect.left + rect.width/2, rect.top + rect.height/2, userZoom / STEP);
+  });
+
+  resetBtn.addEventListener('click', resetView);
+
+  // Click/tap toggle
+  viewer.addEventListener('click', (e) => {
+    if (e.target !== img && e.target !== viewer && e.target !== stage) return;
+    if (userZoom === 1) zoomAt(e.clientX, e.clientY, 2);
+    else zoomAt(e.clientX, e.clientY, 1);
+  });
+
+  // Ctrl+wheel zoom (desktop)
+  viewer.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    const direction = Math.sign(e.deltaY);
+    const factor = direction > 0 ? (1/STEP) : STEP;
+    zoomAt(e.clientX, e.clientY, userZoom * factor);
+  }, { passive: false });
+
+  // Initialize once the image knows its natural size
+  if (img.complete) {
+    resetView();
+  } else {
+    img.addEventListener('load', resetView, { once: true });
+  }
+
+  // If the window changes size, recompute fit scale but preserve userZoom
+  window.addEventListener('resize', () => {
+    const oldFit = fitScale;
+    fitScale = computeFitScale();
+    // Adjust scroll so view doesn’t jump wildly: re-center is simplest and stable
+    applyScale();
+    centerImage();
+  });
+</script>
