@@ -12,7 +12,6 @@
 
   <style>
     :root { color-scheme: dark; }
-
     body {
       margin: 0;
       background: #0b0b0f;
@@ -23,23 +22,28 @@
     header {
       max-width: 1100px;
       margin: 0 auto;
-      padding: 14px 16px;
+      padding: 14px 16px 10px 16px;
       display: flex;
       gap: 12px;
-      align-items: baseline;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
       font-size: 14px;
+    }
+
+    .crumbs {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      flex-wrap: wrap;
     }
 
     a {
       color: inherit;
-      opacity: 0.85;
+      opacity: 0.88;
       text-decoration: none;
     }
-
-    a:hover {
-      opacity: 1;
-      text-decoration: underline;
-    }
+    a:hover { opacity: 1; text-decoration: underline; }
 
     .wrap {
       max-width: 1100px;
@@ -54,20 +58,82 @@
       background: rgba(255,255,255,0.03);
     }
 
-    img {
-      width: 100%;
-      height: auto;
-      display: block;
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.02);
+      flex-wrap: wrap;
     }
 
+    .btnRow {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button, .btn {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.05);
+      color: inherit;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 7px 10px;
+      border-radius: 12px;
+      cursor: pointer;
+      opacity: 0.95;
+    }
+    button:hover, .btn:hover { opacity: 1; border-color: rgba(255,255,255,0.25); }
+    button:active { transform: translateY(1px); }
+
+    .hint {
+      font-size: 12px;
+      opacity: 0.70;
+      line-height: 1.25;
+    }
+
+    /* Viewer */
+    .viewer {
+      position: relative;
+      width: 100%;
+      height: min(78vh, 900px);
+      background: #0f0f14;
+      overflow: auto;              /* enables panning via scroll when zoomed */
+      touch-action: pan-x pan-y;   /* allows mobile panning */
+      cursor: zoom-in;
+    }
+
+    .stage {
+      position: relative;
+      transform-origin: 0 0; /* we control origin via scroll positioning */
+      width: fit-content;
+      height: fit-content;
+    }
+
+    img {
+      display: block;
+      max-width: none; /* important: let it exceed container when zoomed */
+      height: auto;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    /* Footer */
     .footer {
       padding: 10px 12px;
       font-size: 12px;
-      opacity: 0.75;
+      opacity: 0.78;
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
       align-items: center;
+      border-top: 1px solid rgba(255,255,255,0.08);
     }
 
     code {
@@ -77,19 +143,88 @@
 </head>
 <body>
   <header>
-    <a href="../index.html">← index</a>
-    <span style="opacity:0.65;">/</span>
-    <span>Reading Summary 2025</span>
+    <div class="crumbs">
+      <a href="../index.html">← index</a>
+      <span style="opacity:0.65;">/</span>
+      <span>Reading Summary 2025</span>
+    </div>
+    <div class="hint">
+      Tip: click/tap to zoom, scroll/drag to pan when zoomed
+    </div>
   </header>
 
   <div class="wrap">
     <div class="panel">
-      <img src="../assets/reading-summary-2025.png" alt="Reading Summary 2025">
+
+      <div class="toolbar">
+        <div class="btnRow">
+          <button id="zoomOut" type="button">−</button>
+          <button id="zoomIn" type="button">+</button>
+          <button id="reset" type="button">Reset</button>
+          <span class="hint" id="zoomLabel">100%</span>
+        </div>
+
+        <div class="btnRow">
+          <!-- Download: uses the file itself, sets a nice filename -->
+          <a class="btn" id="downloadBtn" href="../assets/reading-summary-2025.png" download="reading-summary-2025.png">
+            Download image
+          </a>
+        </div>
+      </div>
+
+      <div class="viewer" id="viewer">
+        <div class="stage" id="stage">
+          <img id="img"
+               src="../assets/reading-summary-2025.png"
+               alt="Reading Summary 2025">
+        </div>
+      </div>
+
       <div class="footer">
-        <span>Direct file:</span>
+        <span>File:</span>
         <code>../assets/reading-summary-2025.png</code>
       </div>
+
     </div>
   </div>
-</body>
-</html>
+
+  <script>
+    // --- Config ---
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 6;
+    const STEP = 1.25;
+
+    const viewer = document.getElementById('viewer');
+    const stage  = document.getElementById('stage');
+    const img    = document.getElementById('img');
+
+    const zoomInBtn  = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const resetBtn   = document.getElementById('reset');
+    const zoomLabel  = document.getElementById('zoomLabel');
+
+    let zoom = 1;
+
+    function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+    function applyZoom() {
+      stage.style.transform = `scale(${zoom})`;
+      zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+      viewer.style.cursor = zoom > 1 ? 'grab' : 'zoom-in';
+    }
+
+    // Keep the point under the cursor roughly stable when changing zoom.
+    function zoomAt(clientX, clientY, newZoom) {
+      const rect = viewer.getBoundingClientRect();
+
+      // Cursor position within the viewer's scrollable area (in viewport pixels)
+      const xInViewer = clientX - rect.left;
+      const yInViewer = clientY - rect.top;
+
+      // Current scroll offsets (in CSS pixels)
+      const scrollLeft = viewer.scrollLeft;
+      const scrollTop  = viewer.scrollTop;
+
+      // Convert to "stage coordinates" (pre-zoom) by dividing by current zoom
+      const xOnStage = (scrollLeft + xInViewer) / zoom;
+      const yO
