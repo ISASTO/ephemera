@@ -124,8 +124,17 @@
       if (comic.description){
         card.appendChild(el('div', { class: 'desc', html: comic.description }));
       }
-      const completed = comic.completed ? `Completed: ${comic.completed}` : 'Completed: (unknown)';
-      card.appendChild(el('div', { class: 'meta', html: `${comic.pages} pages • ${completed}` }));
+    const completedText = comic.completed
+      ? `Completed ${formatDate(comic.completed)}`
+      : 'Completion date unknown';
+
+    card.appendChild(
+      el('div', {
+        class: 'meta',
+        html: `${comic.pages} pages • ${completedText}`
+      })
+    );
+
 
 
       return card;
