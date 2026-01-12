@@ -166,7 +166,7 @@
       card.appendChild(thumbWrap);
 
       const content = el('div', { class: 'content' });
-      content.appendChild(el('div', { class: 'title', html: comic.title }));
+      Child(el('div', { class: 'title', html: comic.title }));
 
       if (comic.description){
         content.appendChild(el('div', { class: 'desc', html: comic.description }));
@@ -176,10 +176,12 @@
         ? `Completed ${formatDate(comic.completed)}`
         : 'Completion date unknown';
 
+      const pageLabel = comic.pages === 1 ? 'page' : 'pages';
+
       content.appendChild(
         el('div', {
           class: 'meta',
-          html: `${comic.pages} pages • ${completedText}`
+          html: `${comic.pages} ${pageLabel} • ${completedText}`
         })
       );
 
