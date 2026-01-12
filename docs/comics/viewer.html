@@ -203,8 +203,7 @@
         const safePage = Math.min(Math.max(1, page), total);
 
         titleEl.textContent = comic.title;
-        const completed = comic.completed ? ` • Completed: ${comic.completed}` : '';
-        metaEl.textContent = `Page ${safePage} / ${total}${completed}`;
+        metaEl.textContent = `Page ${safePage} / ${total}`;
 
 
         const filename = `${pad3(safePage)}.${comic.ext}`;
