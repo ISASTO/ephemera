@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Comic Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Ubuntu font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root { color-scheme: dark; }
+    body{
+      margin:0;
+      background:#0b0b0f;
+      color:#eaeaf2;
+      font-family:'Ubuntu', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+
+    header{
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 14px 16px;
+      display:flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 14px;
+    }
+
+    a{ color:inherit; opacity:0.88; text-decoration:none; }
+    a:hover{ opacity:1; text-decoration:underline; }
+
+    .wrap{
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 16px 24px 16px;
+    }
+
+    .panel{
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+      border-radius: 14px;
+      overflow:hidden;
+    }
+
+    .toolbar{
+      display:flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.02);
+      flex-wrap: wrap;
+    }
+
+    .btnRow{ display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+
+    button{
+      appearance:none;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.05);
+      color: inherit;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 7px 12px;
+      border-radius: 12px;
+      cursor: pointer;
+    }
+    button:disabled{
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .meta{ opacity: 0.75; font-size: 13px; }
+
+    .viewer{
+      background: #0f0f14;
+      display:grid;
+      place-items:center;
+      padding: 14px;
+    }
+
+    img{
+      max-width: 100%;
+      height: auto;
+      display:block;
+      border-radius: 10px;
+    }
+
+    .error{
+      border: 1px solid rgba(255,120,120,0.25);
+      background: rgba(255,120,120,0.06);
+      border-radius: 14px;
+      padding: 12px;
+      opacity: 0.9;
+    }
+
+    code{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <a href="./index.html">← comics</a>
+      <span style="opacity:.6;"> / </span>
+      <span id="comicTitle">Loading…</span>
+    </div>
+    <div class="meta" id="pageMeta"></div>
+  </header>
+
+  <div class="wrap">
+    <div id="status"></div>
+
+    <div class="panel" id="panel" style="display:none;">
+      <div class="toolbar">
+        <div class="btnRow">
+          <button id="prevBtn" type="button">← last page</button>
+          <button id="nextBtn" type="button">next page →</button>
+        </div>
+
+        <div class="btnRow">
+          <a id="downloadLink" href="#" download class="meta">download page</a>
+        </div>
+      </div>
+
+      <div class="viewer">
+        <img id="pageImg" alt="comic page">
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadManifest(){
+      const res = await fetch('./comics.json', { cache: 'no-store' });
+      if(!res.ok) throw new Error('Failed to load comics.json');
+      return await res.json();
+    }
+
+    function getParams(){
+      const u = new URL(window.location.href);
+      const comic = u.searchParams.get('comic') || '';
+      const pageStr = u.searchParams.get('page') || '1';
+      const page = Math.max(1, parseInt(pageStr, 10) || 1);
+      return { comic, page };
+    }
+
+    function pad3(n){
+      return String(n).padStart(3, '0');
+    }
+
+    function navTo(comicId, page){
+      const u = new URL(window.location.href);
+      u.searchParams.set('comic', comicId);
+      u.searchParams.set('page', String(page));
+      window.location.href = u.toString();
+    }
+
+    (async function init(){
+      const status = document.getElementById('status');
+      const panel = document.getElementById('panel');
+      const titleEl = document.getElementById('comicTitle');
+      const metaEl = document.getElementById('pageMeta');
+
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+      const img = document.getElementById('pageImg');
+      const dl = document.getElementById('downloadLink');
+
+      try{
+        const { comic: comicId, page } = getParams();
+        if (!comicId){
+          status.innerHTML = `<div class="error">Missing <code>?comic=</code> in URL. Go back to <a href="./index.html">comics index</a>.</div>`;
+          return;
+        }
+
+        const data = await loadManifest();
+        const comics = (data && data.comics) ? data.comics : [];
+        const comic = comics.find(c => c.id === comicId);
+
+        if (!comic){
+          status.innerHTML = `<div class="error">Comic <code>${comicId}</code> not found in <code>comics.json</code>.</div>`;
+          return;
+        }
+
+        const total = comic.pages;
+        const safePage = Math.min(Math.max(1, page), total);
+
+        titleEl.textContent = comic.title;
+        metaEl.textContent = `Page ${safePage} / ${total}`;
+
+        const filename = `${pad3(safePage)}.${comic.ext}`;
+        const src = `./assets/${comic.id}/${filename}`;
+
+        img.src = src;
+        img.alt = `${comic.title} - Page ${safePage}`;
+
+        dl.href = src;
+        dl.download = filename;
+
+        prevBtn.disabled = (safePage <= 1);
+        nextBtn.disabled = (safePage >= total);
+
+        prevBtn.onclick = () => navTo(comic.id, safePage - 1);
+        nextBtn.onclick = () => navTo(comic.id, safePage + 1);
+
+        // keyboard arrows (desktop)
+        window.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowLeft' && safePage > 1) navTo(comic.id, safePage - 1);
+          if (e.key === 'ArrowRight' && safePage < total) navTo(comic.id, safePage + 1);
+        });
+
+        // click image to go next (optional)
+        img.addEventListener('click', () => {
+          if (safePage < total) navTo(comic.id, safePage + 1);
+        });
+
+        panel.style.display = 'block';
+      } catch(err){
+        status.innerHTML = `<div class="error">Error: ${err.message}</div>`;
+      }
+    })();
+  </script>
+</body>
+</html>
