@@ -89,6 +89,16 @@
   </main>
 
   <script>
+    function formatDate(iso){
+      if (!iso) return 'Unknown date';
+      const d = new Date(iso + 'T00:00:00'); // avoid timezone drift
+      return d.toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+    }
+    
     async function loadManifest(){
       const res = await fetch('./comics.json', { cache: 'no-store' });
       if(!res.ok) throw new Error('Failed to load comics.json');
