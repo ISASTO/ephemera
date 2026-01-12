@@ -47,18 +47,34 @@
       overflow:hidden;
     }
 
-    .toolbar{
+    /* Top bar: only download stays up here */
+    .topbar{
       display:flex;
-      justify-content: space-between;
+      justify-content: flex-end;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
       border-bottom: 1px solid rgba(255,255,255,0.08);
       background: rgba(255,255,255,0.02);
-      flex-wrap: wrap;
     }
 
-    .btnRow{ display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+    /* Bottom bar: nav buttons centered */
+    .bottombar{
+      display:flex;
+      justify-content: center;
+      align-items: center;
+      padding: 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .btnRow{
+      display:flex;
+      gap: 12px;
+      justify-content: center;
+      align-items:center;
+      flex-wrap: wrap;
+    }
 
     button{
       appearance:none;
@@ -67,9 +83,11 @@
       color: inherit;
       font-family: inherit;
       font-size: 13px;
-      padding: 7px 12px;
+      padding: 8px 14px;
       border-radius: 12px;
       cursor: pointer;
+      min-width: 120px;
+      text-align: center;
     }
     button:disabled{
       opacity: 0.35;
@@ -78,17 +96,22 @@
 
     .meta{ opacity: 0.75; font-size: 13px; }
 
+    /* Fit-to-screen reading area */
     .viewer{
       background: #0f0f14;
-      display:grid;
-      place-items:center;
-      padding: 14px;
+      display: grid;
+      place-items: center;
+      height: calc(100vh - 220px); /* header + topbar + bottombar + padding */
+      overflow: hidden;
+      padding: 10px;
     }
 
     img{
       max-width: 100%;
+      max-height: 100%;
+      width: auto;
       height: auto;
-      display:block;
+      display: block;
       border-radius: 10px;
     }
 
@@ -117,20 +140,25 @@
     <div id="status"></div>
 
     <div class="panel" id="panel" style="display:none;">
-      <div class="toolbar">
+
+      <!-- TOP RIGHT: download -->
+      <div class="topbar">
+        <a id="downloadLink" href="#" download class="meta">download page</a>
+      </div>
+
+      <!-- IMAGE -->
+      <div class="viewer">
+        <img id="pageImg" alt="comic page">
+      </div>
+
+      <!-- BOTTOM CENTER: navigation -->
+      <div class="bottombar">
         <div class="btnRow">
           <button id="prevBtn" type="button">← last page</button>
           <button id="nextBtn" type="button">next page →</button>
         </div>
-
-        <div class="btnRow">
-          <a id="downloadLink" href="#" download class="meta">download page</a>
-        </div>
       </div>
 
-      <div class="viewer">
-        <img id="pageImg" alt="comic page">
-      </div>
     </div>
   </div>
 
@@ -145,8 +173,6 @@
       });
     }
 
-
-    
     async function loadManifest(){
       const res = await fetch('./comics.json', { cache: 'no-store' });
       if(!res.ok) throw new Error('Failed to load comics.json');
@@ -205,7 +231,6 @@
         titleEl.textContent = comic.title;
         metaEl.textContent = `Page ${safePage} / ${total}`;
 
-
         const filename = `${pad3(safePage)}.${comic.ext}`;
         const src = `./assets/${comic.id}/${filename}`;
 
@@ -221,13 +246,11 @@
         prevBtn.onclick = () => navTo(comic.id, safePage - 1);
         nextBtn.onclick = () => navTo(comic.id, safePage + 1);
 
-        // keyboard arrows (desktop)
         window.addEventListener('keydown', (e) => {
           if (e.key === 'ArrowLeft' && safePage > 1) navTo(comic.id, safePage - 1);
           if (e.key === 'ArrowRight' && safePage < total) navTo(comic.id, safePage + 1);
         });
 
-        // click image to go next (optional)
         img.addEventListener('click', () => {
           if (safePage < total) navTo(comic.id, safePage + 1);
         });
