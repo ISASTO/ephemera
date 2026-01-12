@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Comics</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Ubuntu font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root { color-scheme: dark; }
+    body{
+      margin:0;
+      background:#0b0b0f;
+      color:#eaeaf2;
+      font-family:'Ubuntu', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    header{
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 18px 16px 10px 16px;
+      display:flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    a{ color:inherit; opacity:0.88; text-decoration:none; }
+    a:hover{ opacity:1; text-decoration:underline; }
+
+    main{
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 8px 16px 28px 16px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .card{
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+      border-radius: 14px;
+      overflow:hidden;
+      padding: 12px;
+      transition: transform 120ms ease, border-color 120ms ease;
+    }
+    .card:hover{
+      transform: translateY(-2px);
+      border-color: rgba(255,255,255,0.20);
+    }
+    .title{ margin:0 0 6px 0; font-weight:500; font-size: 16px; }
+    .desc{ margin:0; opacity:0.75; font-size: 13px; line-height:1.35; }
+
+    .meta{
+      margin-top: 10px;
+      opacity: 0.7;
+      font-size: 12px;
+    }
+
+    .error{
+      opacity: 0.8;
+      border: 1px solid rgba(255,120,120,0.25);
+      background: rgba(255,120,120,0.06);
+      border-radius: 14px;
+      padding: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <a href="../index.html">← ephemera</a>
+      <span style="opacity:.6;"> / </span>
+      <span>Comics</span>
+    </div>
+    <div style="opacity:.75;font-size:13px;">Click a comic to read.</div>
+  </header>
+
+  <main>
+    <div id="status"></div>
+    <div class="grid" id="grid"></div>
+  </main>
+
+  <script>
+    async function loadManifest(){
+      const res = await fetch('./comics.json', { cache: 'no-store' });
+      if(!res.ok) throw new Error('Failed to load comics.json');
+      return await res.json();
+    }
+
+    function el(tag, attrs = {}, children = []){
+      const node = document.createElement(tag);
+      for (const [k,v] of Object.entries(attrs)){
+        if (k === 'class') node.className = v;
+        else if (k === 'html') node.innerHTML = v;
+        else node.setAttribute(k, v);
+      }
+      for (const c of children) node.appendChild(c);
+      return node;
+    }
+
+    function renderComicCard(comic){
+      const href = `./viewer.html?comic=${encodeURIComponent(comic.id)}&page=1`;
+      const card = el('a', { class: 'card', href });
+
+      card.appendChild(el('div', { class: 'title', html: comic.title }));
+      if (comic.description){
+        card.appendChild(el('div', { class: 'desc', html: comic.description }));
+      }
+      card.appendChild(el('div', { class: 'meta', html: `${comic.pages} pages` }));
+
+      return card;
+    }
+
+    (async function init(){
+      const status = document.getElementById('status');
+      const grid = document.getElementById('grid');
+      try{
+        const data = await loadManifest();
+        const comics = (data && data.comics) ? data.comics : [];
+        if (!comics.length){
+          status.innerHTML = '<div class="error">No comics found in <code>comics.json</code>.</div>';
+          return;
+        }
+        comics.forEach(c => grid.appendChild(renderComicCard(c)));
+      } catch (err){
+        status.innerHTML = `<div class="error">Error: ${err.message}</div>`;
+      }
+    })();
+  </script>
+</body>
+</html>
