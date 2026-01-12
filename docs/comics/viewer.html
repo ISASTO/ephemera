@@ -14,27 +14,16 @@
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
 
-    html, body { height: 100%; }
-
     body{
       margin:0;
       background:#0b0b0f;
       color:#eaeaf2;
       font-family:'Ubuntu', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-
-      /* make the whole page a no-scroll flex "app" */
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+      /* scrolling is allowed (reverting to original behavior) */
     }
 
-    a{ color:inherit; opacity:0.88; text-decoration:none; }
-    a:hover{ opacity:1; text-decoration:underline; }
-
     header{
-      flex: 0 0 auto;
       max-width: 1100px;
-      width: 100%;
       margin: 0 auto;
       padding: 14px 16px;
       display:flex;
@@ -45,38 +34,26 @@
       font-size: 14px;
     }
 
+    a{ color:inherit; opacity:0.88; text-decoration:none; }
+    a:hover{ opacity:1; text-decoration:underline; }
+
     .meta{ opacity: 0.75; font-size: 13px; }
 
-    /* Wrap fills the remaining height under the header */
     .wrap{
-      flex: 1 1 auto;
       max-width: 1100px;
-      width: 100%;
       margin: 0 auto;
-      padding: 0 16px 16px 16px;
-
-      /* Important so children can shrink without forcing overflow */
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
+      padding: 0 16px 24px 16px;
     }
 
     .panel{
-      flex: 1 1 auto;
       border: 1px solid rgba(255,255,255,0.10);
       background: rgba(255,255,255,0.03);
       border-radius: 14px;
-      overflow: hidden;
-
-      /* Panel is also a flex column: topbar, viewer, bottombar */
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
+      overflow:hidden;
     }
 
-    /* Top bar: download top-right */
+    /* TOP RIGHT: download */
     .topbar{
-      flex: 0 0 auto;
       display:flex;
       justify-content: flex-end;
       align-items: center;
@@ -86,28 +63,24 @@
       background: rgba(255,255,255,0.02);
     }
 
-    /* Viewer takes all remaining space */
+    /* ORIGINAL SCROLLING VIEWER (reverted) */
     .viewer{
-      flex: 1 1 auto;
-      min-height: 0;
       background: #0f0f14;
-      display: grid;
-      place-items: center;
-      padding: 10px;
+      display:grid;
+      place-items:center;
+      padding: 14px;
     }
 
-    /* Image must never crop */
+    /* ORIGINAL IMAGE RULES (reverted) */
     img{
-      width: 100%;
-      height: 100%;
-      object-fit: contain;  /* <- guarantees fully visible */
+      max-width: 100%;
+      height: auto;
       display: block;
       border-radius: 10px;
     }
 
-    /* Bottom bar: nav centered */
+    /* BOTTOM CENTER: navigation */
     .bottombar{
-      flex: 0 0 auto;
       display:flex;
       justify-content: center;
       align-items: center;
@@ -167,6 +140,7 @@
     <div id="status"></div>
 
     <div class="panel" id="panel" style="display:none;">
+
       <div class="topbar">
         <a id="downloadLink" href="#" download class="meta">download image</a>
       </div>
@@ -181,6 +155,7 @@
           <button id="nextBtn" type="button">next page →</button>
         </div>
       </div>
+
     </div>
   </div>
 
@@ -243,7 +218,6 @@
 
         titleEl.textContent = comic.title;
 
-        // Hide nav entirely for 1-page comics
         if (total <= 1){
           navBar.style.display = 'none';
           metaEl.textContent = '';
@@ -278,7 +252,7 @@
           if (safePage < total) navTo(comic.id, safePage + 1);
         });
 
-        panel.style.display = 'flex';
+        panel.style.display = 'block';
       } catch(err){
         status.innerHTML = `<div class="error">Error: ${err.message}</div>`;
       }
