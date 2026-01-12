@@ -1,0 +1,66 @@
+ADDING COMICS
+
+FOLDER STRUCTURE
+docs/comics/
+  index.html
+  viewer.html
+  comics.json
+  assets/
+    <comic-id>/
+      001.jpg
+      002.jpg
+      ...
+
+STEP 1 — PREPARE PAGES
+• Export each page as an image
+• Use JPG or WebP
+• Keep images web-safe (~2000–3000px long edge)
+
+Pages MUST be named with leading zeros:
+  001.jpg
+  002.jpg
+  003.jpg
+
+Single-page comics still use:
+  001.jpg
+
+STEP 2 — CREATE COMIC FOLDER
+Inside docs/comics/assets/, create:
+  <comic-id>/
+
+Rules for comic-id:
+• lowercase
+• hyphens only
+• no spaces
+
+Example:
+  docs/comics/assets/comic-id-goes-here/
+
+Upload page images there.
+
+STEP 3 — REGISTER IN comics.json
+Open docs/comics/comics.json and add an entry:
+
+{
+  "id": "comic-id-goes-here",
+  "title": "Title Goes Here",
+  "description": "Description goes here",
+  "ext": "jpg",
+  "pages": 12,
+  "completed": "YYYY-MM-DD"
+}
+
+FIELD NOTES
+• id          → must match folder name exactly
+• title       → displayed on site
+• description → optional
+• ext         → file extension without dot
+• pages       → total number of pages
+• completed   → YYYY-MM-DD (shown as natural date)
+
+STEP 4 — COMMIT
+After committing:
+• Comic appears on /comics/
+• Page 001 is used as the cover thumbnail
+• Viewer opens at page 1
+• Navigation works automatically
