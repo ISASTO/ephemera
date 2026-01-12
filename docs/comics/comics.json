@@ -1,7 +1,15 @@
 {
   "comics": [
     {
-      "id": "godly_powers",
+      "id": "snail-time",
+      "title": "Snail Time",
+      "description": "A man finds a snail",
+      "ext": "jpg",
+      "pages": 1,
+      "completed": "2025-11-28"
+    },
+    {
+      "id": "godly-powers",
       "title": "What Would You Do With Godly Powers?",
       "description": "My first longish comic - about godly powers",
       "ext": "jpg",
@@ -9,7 +17,7 @@
       "completed": "2025-11-28"
     },
     {
-      "id": "room_attack",
+      "id": "room-attack",
       "title": "Room Attacks Yellow Shirt Guy",
       "description": "A seemingly unprovoked attack in the street",
       "ext": "jpg",
@@ -18,14 +26,14 @@
     },
     {
       "id": "mouse",
-      "title": "Mouse's Life",
+      "title": "A Mouse's Life",
       "description": "Based on a paragraph from Thomas Nagel's 'The Absurd'",
       "ext": "jpg",
       "pages": 1,
       "completed": "2025-12-05"
     },
     {
-      "id": "hero_room",
+      "id": "hero-room",
       "title": "Room Hailed as Hero",
       "description": "Turns out it was a good thing all along",
       "ext": "jpg",
@@ -34,7 +42,7 @@
     },
     {
       "id": "born-a-clown",
-      "title": "Born A Clown",
+      "title": "Born a Clown",
       "description": "My first longish full-color comic - about a clown",
       "ext": "jpg",
       "pages": 12,
