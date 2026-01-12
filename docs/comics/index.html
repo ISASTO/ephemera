@@ -48,13 +48,37 @@
       background: rgba(255,255,255,0.03);
       border-radius: 14px;
       overflow:hidden;
-      padding: 12px;
+      padding: 0;
       transition: transform 120ms ease, border-color 120ms ease;
+      display: block;
     }
     .card:hover{
       transform: translateY(-2px);
       border-color: rgba(255,255,255,0.20);
     }
+
+    .thumbWrap{
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: rgba(255,255,255,0.02);
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .thumb{
+      width: 100%;
+      height: 100%;
+      object-fit: cover; /* makes it look like a cover */
+      display:block;
+      opacity: 0.95;
+    }
+
+    .content{
+      padding: 12px;
+    }
+
     .title{ margin:0 0 6px 0; font-weight:500; font-size: 16px; }
     .desc{ margin:0; opacity:0.75; font-size: 13px; line-height:1.35; }
 
@@ -71,6 +95,11 @@
       border-radius: 14px;
       padding: 12px;
     }
+
+    .hint{
+      opacity:.75;
+      font-size:13px;
+    }
   </style>
 </head>
 <body>
@@ -78,7 +107,7 @@
     <div>
       <span>Comics</span>
     </div>
-    <div style="opacity:.75;font-size:13px;">Click a comic to read.</div>
+    <div class="hint">Click a comic to read.</div>
   </header>
 
   <main>
@@ -96,7 +125,7 @@
         day: 'numeric'
       });
     }
-    
+
     async function loadManifest(){
       const res = await fetch('./comics.json', { cache: 'no-store' });
       if(!res.ok) throw new Error('Failed to load comics.json');
@@ -118,23 +147,43 @@
       const href = `./viewer.html?comic=${encodeURIComponent(comic.id)}&page=1`;
       const card = el('a', { class: 'card', href });
 
-      card.appendChild(el('div', { class: 'title', html: comic.title }));
+      // Thumbnail = first page (001)
+      const thumbSrc = `./assets/${comic.id}/001.${comic.ext}`;
+      const thumbWrap = el('div', { class: 'thumbWrap' });
+      const img = el('img', {
+        class: 'thumb',
+        src: thumbSrc,
+        alt: `${comic.title} (cover)`,
+        loading: 'lazy'
+      });
+
+      // If the thumbnail fails to load, hide the broken image but keep layout tidy
+      img.addEventListener('error', () => {
+        thumbWrap.innerHTML = '<div style="opacity:.55;font-size:12px;padding:10px;text-align:center;">(missing cover image)</div>';
+      });
+
+      thumbWrap.appendChild(img);
+      card.appendChild(thumbWrap);
+
+      const content = el('div', { class: 'content' });
+      content.appendChild(el('div', { class: 'title', html: comic.title }));
+
       if (comic.description){
-        card.appendChild(el('div', { class: 'desc', html: comic.description }));
+        content.appendChild(el('div', { class: 'desc', html: comic.description }));
       }
-    const completedText = comic.completed
-      ? `Completed ${formatDate(comic.completed)}`
-      : 'Completion date unknown';
 
-    card.appendChild(
-      el('div', {
-        class: 'meta',
-        html: `${comic.pages} pages • ${completedText}`
-      })
-    );
+      const completedText = comic.completed
+        ? `Completed ${formatDate(comic.completed)}`
+        : 'Completion date unknown';
 
+      content.appendChild(
+        el('div', {
+          class: 'meta',
+          html: `${comic.pages} pages • ${completedText}`
+        })
+      );
 
-
+      card.appendChild(content);
       return card;
     }
 
