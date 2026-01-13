@@ -166,7 +166,8 @@
       card.appendChild(thumbWrap);
 
       const content = el('div', { class: 'content' });
-      Child(el('div', { class: 'title', html: comic.title }));
+      content.appendChild(el('div', { class: 'title', html: comic.title }));
+
 
       if (comic.description){
         content.appendChild(el('div', { class: 'desc', html: comic.description }));
