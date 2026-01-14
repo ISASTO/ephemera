@@ -156,7 +156,8 @@
         class: 'thumb',
         src: thumbSrc,
         alt: `${comic.title} (cover)`,
-        loading: 'lazy'
+        loading: 'lazy',
+        decoding: 'async'
       });
 
       // If the thumbnail fails to load, hide the broken image but keep layout tidy
