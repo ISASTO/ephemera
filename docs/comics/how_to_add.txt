@@ -47,7 +47,8 @@ Open docs/comics/comics.json and add an entry:
   "description": "Description goes here",
   "ext": "jpg",
   "pages": 12,
-  "completed": "YYYY-MM-DD"
+  "completed": "YYYY-MM-DD",
+  "thumb": "thumb.jpg"
 }
 
 FIELD NOTES
