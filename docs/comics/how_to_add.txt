@@ -7,6 +7,7 @@ docs/comics/
   comics.json
   assets/
     <comic-id>/
+      thumb.jpg
       001.jpg
       002.jpg
       ...
