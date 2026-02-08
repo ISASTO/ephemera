@@ -53,6 +53,15 @@
       "pages": 12,
       "completed": "2026-01-12",
       "thumb": "thumb.jpg"
+    },
+    {
+      "id": "pig",
+      "title": "Pig",
+      "description": "This guy loves his pig",
+      "ext": "jpg",
+      "pages": 1,
+      "completed": "2026-02-08",
+      "thumb": "thumb.jpg"
     }
   ]
 }
