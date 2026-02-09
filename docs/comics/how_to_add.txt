@@ -40,7 +40,7 @@ Rules for comic-id:
 Example:
   docs/comics/assets/comic-id-goes-here/
 
-Upload page images there.
+Upload page images and thumbnail there.
 
 STEP 3 — REGISTER IN comics.json
 Open docs/comics/comics.json and add an entry:
