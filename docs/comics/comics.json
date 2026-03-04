@@ -62,6 +62,15 @@
       "pages": 1,
       "completed": "2026-02-08",
       "thumb": "thumb.jpg"
+    },
+    {
+    "id": "zebra",
+    "title": "Zebrelevator",
+    "description": "A guy is trapped in an elevator",
+    "ext": "jpg",
+    "pages": 1,
+    "completed": "2026-03-04",
+    "thumb": "thumb.jpg"
     }
   ]
 }
