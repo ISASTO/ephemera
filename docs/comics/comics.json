@@ -64,13 +64,22 @@
       "thumb": "thumb.jpg"
     },
     {
-    "id": "zebra",
-    "title": "Zebrelevator",
-    "description": "A guy is trapped in an elevator",
-    "ext": "jpg",
-    "pages": 1,
-    "completed": "2026-03-04",
-    "thumb": "thumb.jpg"
+      "id": "zebra",
+      "title": "Zebrelevator",
+      "description": "A guy is trapped in an elevator",
+      "ext": "jpg",
+      "pages": 1,
+      "completed": "2026-03-04",
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "fire",
+      "title": "Fire Starter",
+      "description": "How to start a fire the cool way",
+      "ext": "jpg",
+      "pages": 7,
+      "completed": "2026-03-26",
+      "thumb": "thumb.jpg"
     }
   ]
 }
