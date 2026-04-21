@@ -80,6 +80,15 @@
       "pages": 7,
       "completed": "2026-03-26",
       "thumb": "thumb.jpg"
+    },
+    {
+      "id": "beach",
+      "title": "Beach Day",
+      "description": "A guy has a fun day at the beach",
+      "ext": "jpg",
+      "pages": 7,
+      "completed": "2026-04-19",
+      "thumb": "thumb.jpg"
     }
   ]
 }
