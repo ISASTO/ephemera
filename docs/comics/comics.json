@@ -89,7 +89,7 @@
       "pages": 7,
       "completed": "2026-04-19",
       "thumb": "thumb.jpg"
-    },
+    }
     {
       "id": "thief",
       "title": "The Thief",
@@ -97,6 +97,15 @@
       "ext": "jpg",
       "pages": 8,
       "completed": "2026-04-28",
+      "thumb": "thumb.jpg"
+    },
+    {
+      "id": "garden",
+      "title": "The Garden",
+      "description": "A guy tends to his garden",
+      "ext": "jpg",
+      "pages": 8,
+      "completed": "2026-05-09",
       "thumb": "thumb.jpg"
     }
   ]
