@@ -116,6 +116,15 @@
       "pages": 8,
       "completed": "2026-05-14",
       "thumb": "thumb.jpg"
+    },
+    {
+      "id": "picnic",
+      "title": "The Picnic",
+      "description": "A guy has a nice picnic",
+      "ext": "jpg",
+      "pages": 8,
+      "completed": "2026-05-19",
+      "thumb": "thumb.jpg"
     }
   ]
 }
