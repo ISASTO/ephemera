@@ -134,6 +134,15 @@
       "pages": 8,
       "completed": "2026-05-23",
       "thumb": "thumb.jpg"
+    },
+    {
+      "id": "mountain",
+      "title": "The Mountain",
+      "description": "A mountain expedition",
+      "ext": "jpg",
+      "pages": 8,
+      "completed": "2026-05-27",
+      "thumb": "thumb.jpg"
     }
   ]
 }
