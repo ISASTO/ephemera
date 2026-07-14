@@ -1,4 +1,4 @@
-name: Temporary DALI index scan
+name: Temporary DALI Zenodo inspection
 
 on:
   pull_request:
@@ -11,22 +11,35 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone and inspect official DALI repository
+      - name: Inspect DALI Zenodo release
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/gabolsgabs/DALI.git dali-repo
           mkdir results
-          find dali-repo/versions -maxdepth 5 -type f -printf '%s\t%p\n' | sort -n > results/version-files.tsv
-          find dali-repo -type f \( -name '*.gz' -o -name '*.zip' -o -name '*.tar*' \) -printf '%s\t%p\n' | sort -n > results/archives.tsv
-          grep -RniE 'https?://|download|drive|zenodo|figshare' dali-repo/versions dali-repo/README.md > results/download-links.txt || true
-          du -sh dali-repo
-          cat results/version-files.tsv
-          cat results/archives.tsv
-          cat results/download-links.txt
-      - name: Upload inspection results
+          curl -fLsS 'https://zenodo.org/api/records/2577915' -o results/record.json
+          python - <<'PY'
+          import json, pathlib
+          d=json.load(open('results/record.json'))
+          print('title',d.get('metadata',{}).get('title'))
+          lines=[]
+          for f in d.get('files',[]):
+              links=f.get('links',{})
+              row={
+                  'key':f.get('key'),
+                  'size':f.get('size'),
+                  'checksum':f.get('checksum'),
+                  'self':links.get('self'),
+                  'download':links.get('content') or links.get('self')
+              }
+              lines.append(row)
+              print(row)
+          pathlib.Path('results/files.json').write_text(json.dumps(lines,indent=2),encoding='utf-8')
+          pathlib.Path('results/files.tsv').write_text('\n'.join(f"{x['size']}\t{x['key']}\t{x['download']}" for x in lines),encoding='utf-8')
+          PY
+          cat results/files.tsv
+      - name: Upload Zenodo inspection
         uses: actions/upload-artifact@v4
         with:
-          name: dali-index-inspection
+          name: dali-zenodo-inspection
           path: results
           retention-days: 1
