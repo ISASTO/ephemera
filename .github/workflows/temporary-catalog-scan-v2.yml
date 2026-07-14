@@ -31,13 +31,23 @@ jobs:
           curl -fL --retry 3 -o previews/newdad__1581102457__how.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/f9/6c/a9/f96ca90d-cfc2-f618-618f-8adc05157938/mzaf_6810347805845543129.plus.aac.p.m4a'
           curl -fL --retry 3 -o previews/newdad__1822978132__puzzle.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/f9/3a/29/f93a2998-c762-d214-e708-bd1ee71895ad/mzaf_2817574174491499569.plus.aac.p.m4a'
           curl -fL --retry 3 -o previews/newdad__1822977945__heavyweight.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/65/55/ec/6555ec37-11c1-ac97-c0fe-34510524a95c/mzaf_13211031936148048823.plus.aac.p.m4a'
+      - name: Convert AAC previews to PCM WAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for file in previews/*.m4a; do
+            base="$(basename "$file" .m4a)"
+            ffmpeg -v error -y -i "$file" -ar 44100 -ac 2 "wavs/${base}.wav"
+          done
+          ls -lh wavs
       - name: Install Demucs
         run: pip install --quiet numpy demucs
       - name: Isolate vocals
         shell: bash
         run: |
           set -euo pipefail
-          python -m demucs --two-stems=vocals -o separated previews/*
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
           mkdir vocal-stems
           find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
             track="$(basename "$(dirname "$file")")"
