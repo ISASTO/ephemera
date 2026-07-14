@@ -1,4 +1,4 @@
-name: Temporary strict top-candidate vocal check
+name: Temporary refined top-candidate vocal check
 
 on:
   pull_request:
@@ -16,23 +16,23 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           pip install --quiet numpy demucs
-      - name: Download mathematically shortlisted previews
+      - name: Download refined mathematical shortlist
         shell: bash
         run: |
           set -euo pipefail
           mkdir previews
-          curl -fL --retry 3 -o previews/crumb__vinta.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/fb/61/d3/fb61d349-b237-7d8d-ee74-0616b5268926/mzaf_7892035487361193705.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/boygenius__letter-to-an-old-poet.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/9f/3f/fc/9f3ffc41-031f-1d65-e6b5-654dcd6283b0/mzaf_202766263001818294.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/slow-pulp__gone-2.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/60/07/2d/60072d68-8948-23b4-8ea4-79a3dd9e59de/mzaf_4552224382314776319.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/big-thief__promise-is-a-pendulum.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/e6/a6/10/e6a61092-47f0-bb2f-dcec-b8136f7b9093/mzaf_17575704754232601927.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/slow-pulp__hanging-by-a-moment.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/2c/80/07/2c8007d4-0ff8-ae04-1fef-b9c031e99c63/mzaf_11076186937941406719.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/fazerdaze__city-glitter.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/a1/42/d6/a142d655-2471-40c0-5cdb-3b009ee01f0d/mzaf_10855333555805606929.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/mitski__cop-car.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/3a/2a/bf/3a2abf56-a065-31dd-b4b3-d7d5479ceb9e/mzaf_12729860694073216978.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/blondshell__kiss-city-home-demo.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/9c/43/23/9c4323b6-1de0-b3f4-ce5c-d9085ae48d12/mzaf_8468887218707486193.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/fazerdaze__somethink.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/6f/97/a1/6f97a179-2029-c192-8e49-c3e33c2e838e/mzaf_13167615808912379651.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/still-corners__the-white-season.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/a0/0e/ca/a00eca99-e5de-e3de-f120-0a9c5649d823/mzaf_13841424727922900743.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/alvvays__saved-by-a-waif.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/b0/60/1c/b0601c29-f30b-16db-9763-a319709b2846/mzaf_10251772534450839615.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/fazerdaze__sleeper.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/3b/78/31/3b783101-63e6-371e-7dba-de0c68517936/mzaf_13916199662797122114.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/mitski__door.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview122/v4/b1/97/20/b1972055-b518-b446-f809-5c9c86cb7a7f/mzaf_17222863943823666237.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/slow-pulp__slugs.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/47/8c/27/478c275f-7270-4225-d092-1fcea187f4e4/mzaf_9725650515252973770.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/big-thief__mary.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/7e/d2/78/7ed2782b-9d0d-6ed5-888f-ac33e6b88f70/mzaf_1228150362771723137.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/mitski__in-a-lake.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/62/63/d1/6263d15b-d080-cbac-774c-3f092b733f54/mzaf_17706781318209920540.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/tops__driverless-passenger.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/51/71/f4/5171f483-3c16-daf3-b5ae-1863fcc4a921/mzaf_3653542569092668683.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/blondshell__two-times.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/09/a7/8c/09a78c01-e49b-9c83-31dd-c2a856a4a245/mzaf_13676318678813336498.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/warpaint__baby.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/67/59/b9/6759b99e-2f36-2a26-6252-fe54f466be70/mzaf_13294442781468417526.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/big-thief__simulation-swarm.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/56/1d/e1/561de1dd-a7ca-f053-9c08-15023dd15741/mzaf_13452211018978895983.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/warpaint__son.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/cb/0b/69/cb0b69fe-147d-960e-b37f-f91896faf1d7/mzaf_859659317384308640.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/yeah-yeah-yeahs__maps-itunes-originals.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/55/6b/82/556b827c-2f80-d607-7b9b-c048503ab54f/mzaf_4628321494093715977.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/tops__too-much.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/76/6f/65/766f65f9-9c60-1e55-e95e-59bf9fcff12e/mzaf_973909424870627476.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/momma__motorbike.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/72/3a/58/723a5803-a52d-da9e-8644-5884d5554b6b/mzaf_7024459212299705661.plus.aac.p.m4a'
       - name: Convert and isolate vocals
         shell: bash
         run: |
@@ -48,9 +48,9 @@ jobs:
             track="$(basename "$(dirname "$file")")"
             cp "$file" "vocal-stems/${track}-vocals.wav"
           done
-      - name: Upload strict candidate vocals
+      - name: Upload refined candidate vocals
         uses: actions/upload-artifact@v4
         with:
-          name: strict-top-candidate-vocals
+          name: refined-top-candidate-vocals
           path: vocal-stems/*.wav
           retention-days: 1
