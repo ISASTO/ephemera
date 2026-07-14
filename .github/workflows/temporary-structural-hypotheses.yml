@@ -1,4 +1,4 @@
-name: Temporary refined top-candidate vocal check
+name: Temporary adjacent top vocal check
 
 on:
   pull_request:
@@ -16,23 +16,40 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           pip install --quiet numpy demucs
-      - name: Download refined mathematical shortlist
+      - name: Resolve adjacent-catalog mathematical shortlist
         shell: bash
         run: |
           set -euo pipefail
-          mkdir previews
-          curl -fL --retry 3 -o previews/mitski__door.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview122/v4/b1/97/20/b1972055-b518-b446-f809-5c9c86cb7a7f/mzaf_17222863943823666237.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/slow-pulp__slugs.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/47/8c/27/478c275f-7270-4225-d092-1fcea187f4e4/mzaf_9725650515252973770.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/big-thief__mary.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/7e/d2/78/7ed2782b-9d0d-6ed5-888f-ac33e6b88f70/mzaf_1228150362771723137.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/mitski__in-a-lake.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/62/63/d1/6263d15b-d080-cbac-774c-3f092b733f54/mzaf_17706781318209920540.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/tops__driverless-passenger.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/51/71/f4/5171f483-3c16-daf3-b5ae-1863fcc4a921/mzaf_3653542569092668683.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/blondshell__two-times.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/09/a7/8c/09a78c01-e49b-9c83-31dd-c2a856a4a245/mzaf_13676318678813336498.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/warpaint__baby.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/67/59/b9/6759b99e-2f36-2a26-6252-fe54f466be70/mzaf_13294442781468417526.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/big-thief__simulation-swarm.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/56/1d/e1/561de1dd-a7ca-f053-9c08-15023dd15741/mzaf_13452211018978895983.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/warpaint__son.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/cb/0b/69/cb0b69fe-147d-960e-b37f-f91896faf1d7/mzaf_859659317384308640.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/yeah-yeah-yeahs__maps-itunes-originals.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/55/6b/82/556b827c-2f80-d607-7b9b-c048503ab54f/mzaf_4628321494093715977.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/tops__too-much.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/76/6f/65/766f65f9-9c60-1e55-e95e-59bf9fcff12e/mzaf_973909424870627476.plus.aac.p.m4a'
-          curl -fL --retry 3 -o previews/momma__motorbike.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/72/3a/58/723a5803-a52d-da9e-8644-5884d5554b6b/mzaf_7024459212299705661.plus.aac.p.m4a'
+          mkdir -p previews metadata
+          python - <<'PY'
+          import json, pathlib, re, urllib.parse, urllib.request
+          targets=[
+            ('The Japanese House','Over There'),('Yumi Zouma','KPR (Redux)'),
+            ('Wolf Alice','After the Zero Hour'),('Beach House','Levitation'),
+            ('Men I Trust','Tailwhip'),('The Japanese House','You Always Get What You Want'),
+            ('Purity Ring','MJ Odyssey'),('The Japanese House','You Seemed So Happy (LA Session)'),
+            ('Weyes Blood','Be Free'),('Cults','Always Forever (Demo)'),
+            ('Men I Trust','Poplar Tree'),('Yumi Zouma','Lonely After')]
+          rows=[]
+          for artist,title in targets:
+            params=urllib.parse.urlencode({'term':f'{artist} {title}','entity':'song','limit':100,'country':'US'})
+            req=urllib.request.Request('https://itunes.apple.com/search?'+params,headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req,timeout=40) as r:data=json.load(r)
+            exact=[x for x in data.get('results',[]) if x.get('artistName','').casefold()==artist.casefold() and x.get('trackName','').casefold()==title.casefold() and x.get('previewUrl')]
+            if not exact:
+              # tolerate punctuation/session suffix differences, but require the target words in order
+              norm=lambda s:re.sub(r'[^a-z0-9]+',' ',s.casefold()).strip()
+              nt=norm(title)
+              exact=[x for x in data.get('results',[]) if x.get('artistName','').casefold()==artist.casefold() and nt in norm(x.get('trackName','')) and x.get('previewUrl')]
+            if not exact:
+              print('NO EXACT',artist,title);continue
+            x=exact[0];slug=re.sub(r'[^a-z0-9]+','-',f'{artist}-{title}'.casefold()).strip('-')[:100];fn=f'{slug}__{x.get("trackId")}.m4a'
+            req=urllib.request.Request(x['previewUrl'],headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req,timeout=40) as src,open(pathlib.Path('previews')/fn,'wb') as dst:dst.write(src.read())
+            rows.append({'artist':artist,'title':title,'resolved_title':x.get('trackName'),'filename':fn,'preview_url':x['previewUrl']})
+            print('DOWNLOADED',artist,title,'AS',x.get('trackName'))
+          pathlib.Path('metadata/targets.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          PY
       - name: Convert and isolate vocals
         shell: bash
         run: |
@@ -48,9 +65,11 @@ jobs:
             track="$(basename "$(dirname "$file")")"
             cp "$file" "vocal-stems/${track}-vocals.wav"
           done
-      - name: Upload refined candidate vocals
+      - name: Upload adjacent top vocals
         uses: actions/upload-artifact@v4
         with:
-          name: refined-top-candidate-vocals
-          path: vocal-stems/*.wav
+          name: adjacent-top-vocals
+          path: |
+            vocal-stems/*.wav
+            metadata/targets.json
           retention-days: 1
