@@ -19,11 +19,10 @@ jobs:
         run: |
           set -euo pipefail
           gh run download 29365991093 --repo "$GITHUB_REPOSITORY" --name recent-history-vocals --dir corpus
-          find corpus -maxdepth 2 -type f | head
           du -sh corpus
       - name: Install matcher dependencies
         run: pip install --quiet numpy scipy librosa soundfile
-      - name: Rank isolated vocals with the beat-locked motif
+      - name: Rank isolated vocals with full and partial motifs
         shell: bash
         run: |
           set -euo pipefail
@@ -35,59 +34,42 @@ jobs:
 
           q=np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88.0])
           qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
-          groups=[(0,4),(4,8),(8,11),(11,15)]
-
-          def match(t,midi):
+          variants={
+            'full':(q,qt),
+            'two_cycles':(q[:8],qt[:8]),
+            'one_cycle':(q[:4],qt[:4]),
+            'cycle_plus_third':(q[:11],qt[:11]),
+            'closing_tag':(q[11:],qt[11:]-qt[11]),
+            'second_through_tag':(q[4:],qt[4:]-qt[4])
+          }
+          def match_variant(t,midi,qq,qtt):
               dt=float(np.median(np.diff(t))); best=None
-              for scale in np.arange(.82,1.211,.025):
-                  rel=np.rint(qt*scale/dt).astype(int); span=int(rel[-1])
-                  starts=np.arange(0,max(0,len(t)-span-1),max(1,int(.05/dt)))
+              for scale in np.arange(.78,1.251,.025):
+                  rel=np.rint(qtt*scale/dt).astype(int); span=int(rel[-1]); starts=np.arange(0,max(0,len(t)-span-1),max(1,int(.05/dt)))
                   if not len(starts): continue
-                  vals=midi[starts[:,None]+rel[None,:]]
-                  cover=np.isfinite(vals).mean(axis=1); ok=cover>=.72
+                  vals=midi[starts[:,None]+rel[None,:]]; cover=np.isfinite(vals).mean(axis=1); ok=cover>=.70
                   if not ok.any(): continue
-                  vals=vals[ok]; starts2=starts[ok]; cover2=cover[ok]
-                  dif=vals-q[None,:]; tr=np.nanmedian(dif,axis=1); aligned=vals-tr[:,None]
-                  err=np.abs(aligned-q[None,:]); mae=np.nanmean(err,axis=1); p80=np.nanpercentile(err,80,axis=1)
-                  dv=np.diff(vals,axis=1); dq=np.diff(q)[None,:]; mask=np.isfinite(dv)
-                  iverr=np.nansum(np.abs(dv-dq)*mask,axis=1)/np.maximum(mask.sum(axis=1),1)
-                  gmeans=np.stack([np.nanmean(err[:,a:b],axis=1) for a,b in groups],axis=1); gmax=np.nanmax(gmeans,axis=1)
-                  repeat=np.nanmean(np.abs(aligned[:,0:4]-aligned[:,4:8]),axis=1)
-                  score=mae+.45*iverr+.30*p80+.35*gmax+.25*repeat+2*(1-cover2)
-                  k=int(np.nanargmin(score))
-                  rec={'score':float(score[k]),'start':float(t[starts2[k]]),'scale':float(scale),'transpose':float(tr[k]),
-                       'mae':float(mae[k]),'interval_error':float(iverr[k]),'p80':float(p80[k]),'group_max':float(gmax[k]),
-                       'repeat_error':float(repeat[k]),'coverage':float(cover2[k]),
-                       'observed':[None if not np.isfinite(x) else float(x) for x in vals[k]],
-                       'aligned':[None if not np.isfinite(x) else float(x-tr[k]) for x in vals[k]]}
-                  if best is None or rec['score']<best['score']: best=rec
-              return best
-
-          catalog_path=next(pathlib.Path('corpus').rglob('catalog.json'))
-          catalog=json.loads(catalog_path.read_text(encoding='utf-8'))
-          by_stem={pathlib.Path(r['filename']).stem:r for r in catalog}
-          rows=[]
-          stems=list(pathlib.Path('corpus').rglob('*-vocals.wav'))
-          print('STEMS',len(stems))
+                  vals=vals[ok]; starts2=starts[ok]; cover2=cover[ok]; dif=vals-qq[None,:]; tr=np.nanmedian(dif,axis=1); aligned=vals-tr[:,None]
+                  err=np.abs(aligned-qq[None,:]); mae=np.nanmean(err,axis=1); p80=np.nanpercentile(err,80,axis=1)
+                  dv=np.diff(vals,axis=1); dq=np.diff(qq)[None,:]; mask=np.isfinite(dv); iverr=np.nansum(np.abs(dv-dq)*mask,axis=1)/np.maximum(mask.sum(axis=1),1)
+                  score=mae+.55*iverr+.25*p80+2*(1-cover2); k=int(np.nanargmin(score))
+                  rec={'score':float(score[k]),'start':float(t[starts2[k]]),'scale':float(scale),'transpose':float(tr[k]),'mae':float(mae[k]),'interval_error':float(iverr[k]),'p80':float(p80[k]),'coverage':float(cover2[k]),'observed':[None if not np.isfinite(x) else float(x) for x in vals[k]],'aligned':[None if not np.isfinite(x) else float(x-tr[k]) for x in vals[k]]}
+                  if best is None or rec['score']<best['score']:best=rec
+              return best or {'score':999}
+          catalog_path=next(pathlib.Path('corpus').rglob('catalog.json'));catalog=json.loads(catalog_path.read_text(encoding='utf-8'));by_stem={pathlib.Path(r['filename']).stem:r for r in catalog}
+          rows=[];stems=list(pathlib.Path('corpus').rglob('*-vocals.wav'));print('STEMS',len(stems))
           for i,path in enumerate(stems,1):
-              y,sr=librosa.load(path,sr=8000,mono=True)
-              f0,voiced,_=librosa.pyin(y,fmin=librosa.note_to_hz('C2'),fmax=librosa.note_to_hz('C7'),sr=sr,frame_length=2048,hop_length=160)
-              midi=librosa.hz_to_midi(f0); midi[~voiced]=np.nan
-              t=librosa.times_like(f0,sr=sr,hop_length=160)
-              rec=match(t,midi)
-              key=path.name[:-len('-vocals.wav')]
-              meta=by_stem.get(key,{})
-              row={'artist':meta.get('artist'),'title':meta.get('title'),'filename':path.name,'track_id':meta.get('track_id'),'preview_url':meta.get('preview_url'),**(rec or {'score':999})}
-              rows.append(row)
-              print(i,row['score'],row['artist'],row['title'])
-          rows.sort(key=lambda x:x['score'])
-          pathlib.Path('results/rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
-          pathlib.Path('results/top.tsv').write_text('\n'.join(f"{r['score']:.6f}\t{r.get('artist')}\t{r.get('title')}\t{r.get('start')}\t{r.get('scale')}\t{r['filename']}" for r in rows),encoding='utf-8')
-          for r in rows[:20]:
-              p=next(pathlib.Path('corpus').rglob(r['filename']))
-              shutil.copy2(p,pathlib.Path('top-stems')/p.name)
-          print('TOP RESULTS')
-          print(pathlib.Path('results/top.tsv').read_text()[:8000])
+              y,sr=librosa.load(path,sr=8000,mono=True);f0,voiced,_=librosa.pyin(y,fmin=librosa.note_to_hz('C2'),fmax=librosa.note_to_hz('C7'),sr=sr,frame_length=2048,hop_length=160)
+              midi=librosa.hz_to_midi(f0);midi[~voiced]=np.nan;t=librosa.times_like(f0,sr=sr,hop_length=160);key=path.name[:-len('-vocals.wav')];meta=by_stem.get(key,{})
+              scores={name:match_variant(t,midi,qq,qtt) for name,(qq,qtt) in variants.items()}
+              row={'artist':meta.get('artist'),'title':meta.get('title'),'filename':path.name,'track_id':meta.get('track_id'),'preview_url':meta.get('preview_url'),'matches':scores}
+              row['full_score']=scores['full']['score'];row['partial_score']=min(v['score'] for k,v in scores.items() if k!='full');row['best_partial']=min((k for k in scores if k!='full'),key=lambda k:scores[k]['score']);rows.append(row)
+              print(i,row['full_score'],row['partial_score'],row['best_partial'],row['artist'],row['title'])
+          rows.sort(key=lambda x:min(x['full_score'],x['partial_score']));pathlib.Path('results/rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('results/top.tsv').write_text('\n'.join(f"{r['full_score']:.5f}\t{r['partial_score']:.5f}\t{r['best_partial']}\t{r.get('artist')}\t{r.get('title')}\t{r['filename']}" for r in rows),encoding='utf-8')
+          for r in rows[:25]:
+              p=next(pathlib.Path('corpus').rglob(r['filename']));shutil.copy2(p,pathlib.Path('top-stems')/p.name)
+          print(pathlib.Path('results/top.tsv').read_text()[:12000])
           PY
       - name: Upload compact strict results
         uses: actions/upload-artifact@v4
