@@ -1,0 +1,40 @@
+name: Temporary feature-match batch
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download public Spotify previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previews
+          curl -fL --retry 3 -o previews/no-one-noticed.mp3 'https://p.scdn.co/mp3-preview/d4318ea548c910877ebe8f80c9d5ec192cee7f97.mp3'
+          curl -fL --retry 3 -o previews/be-sweet.mp3 'https://p.scdn.co/mp3-preview/27defb323f184658b473ee976fa71fd883440bff.mp3'
+          curl -fL --retry 3 -o previews/shotgun.mp3 'https://p.scdn.co/mp3-preview/f4ffd2af84a90dc17b925da64c47846085f44b66.mp3'
+          curl -fL --retry 3 -o previews/sofia.mp3 'https://p.scdn.co/mp3-preview/bc4990b8e0e567426683b6018a92a2483a11405e.mp3'
+          curl -fL --retry 3 -o previews/quicksand.mp3 'https://p.scdn.co/mp3-preview/0dd92921f122c478b161490bbf0387cc215220d0.mp3'
+          curl -fL --retry 3 -o previews/not-my-baby.mp3 'https://p.scdn.co/mp3-preview/4a14da4c92384ff3f9b7565d1045426bb172c41b.mp3'
+      - name: Install Demucs
+        run: pip install --quiet numpy demucs
+      - name: Isolate vocals
+        run: |
+          python -m demucs --two-stems=vocals -o separated previews/*.mp3
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+      - name: Upload vocal stems
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-match-vocals
+          path: vocal-stems/*.wav
+          retention-days: 1
