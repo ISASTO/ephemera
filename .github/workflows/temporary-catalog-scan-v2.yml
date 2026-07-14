@@ -1,4 +1,4 @@
-name: Temporary catalog scan v2
+name: Temporary full catalog preview fetch
 
 on:
   pull_request:
@@ -8,58 +8,52 @@ permissions:
   contents: read
 
 jobs:
-  catalog:
+  fetch:
     runs-on: ubuntu-latest
     steps:
-      - name: Query public music catalogs
+      - name: Download exact-artist Apple previews
         shell: bash
         run: |
           set -euo pipefail
-          mkdir results
-          curl -fsSLG 'https://itunes.apple.com/search' \
-            --data-urlencode 'term=Pearly Drops' \
-            --data 'entity=song' --data 'limit=200' > results/itunes-pearly-drops.json
-          curl -fsSLG 'https://itunes.apple.com/search' \
-            --data-urlencode 'term=NewDad' \
-            --data 'entity=song' --data 'limit=200' > results/itunes-newdad.json
-          curl -fsSLG 'https://musicbrainz.org/ws/2/recording/' \
-            -H 'User-Agent: melody-research/1.0 (temporary analysis)' \
-            --data-urlencode 'query=artist:"Pearly Drops"' \
-            --data 'fmt=json' --data 'limit=100' > results/mb-pearly-drops.json
-          sleep 1
-          curl -fsSLG 'https://musicbrainz.org/ws/2/recording/' \
-            -H 'User-Agent: melody-research/1.0 (temporary analysis)' \
-            --data-urlencode 'query=artist:"NewDad"' \
-            --data 'fmt=json' --data 'limit=100' > results/mb-newdad.json
+          mkdir -p catalog previews
+          curl -fsSLG 'https://itunes.apple.com/search' --data-urlencode 'term=Pearly Drops' --data 'entity=song' --data 'limit=200' > catalog/pearly-drops.json
+          curl -fsSLG 'https://itunes.apple.com/search' --data-urlencode 'term=NewDad' --data 'entity=song' --data 'limit=200' > catalog/newdad.json
           python - <<'PY'
-          import json, pathlib
-          out=[]
-          for artist,fn in [('Pearly Drops','results/itunes-pearly-drops.json'),('NewDad','results/itunes-newdad.json')]:
-              d=json.load(open(fn))
-              rows=[]
-              for r in d.get('results',[]):
-                  if r.get('artistName','').casefold()==artist.casefold():
-                      rows.append((r.get('trackName'),r.get('collectionName'),r.get('releaseDate'),r.get('previewUrl'),r.get('trackId')))
-              seen=set(); rows2=[]
-              for row in rows:
-                  if row[0] not in seen:
-                      seen.add(row[0]); rows2.append(row)
-              out.append(f'## {artist} iTunes ({len(rows2)} unique tracks)')
-              out.extend('\t'.join('' if x is None else str(x) for x in row) for row in rows2)
-          for artist,fn in [('Pearly Drops','results/mb-pearly-drops.json'),('NewDad','results/mb-newdad.json')]:
-              d=json.load(open(fn)); recs=d.get('recordings',[])
-              titles=[]
-              for r in recs:
-                  title=r.get('title')
-                  if title and title not in titles: titles.append(title)
-              out.append(f'\n## {artist} MusicBrainz ({len(titles)} unique recordings)')
-              out.extend(titles)
-          pathlib.Path('results/catalog-summary.txt').write_text('\n'.join(out),encoding='utf-8')
+          import json, pathlib, re, urllib.request, time
+          metadata=[]
+          for artist,fn in [('Pearly Drops','catalog/pearly-drops.json'),('NewDad','catalog/newdad.json')]:
+              data=json.load(open(fn))
+              seen=set()
+              for r in data.get('results',[]):
+                  if r.get('artistName','').casefold()!=artist.casefold(): continue
+                  title=r.get('trackName') or 'untitled'
+                  if title in seen: continue
+                  seen.add(title)
+                  url=r.get('previewUrl')
+                  if not url: continue
+                  slug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80]
+                  track_id=str(r.get('trackId','unknown'))
+                  ext='.m4a'
+                  filename=f"{artist.casefold().replace(' ','-')}__{track_id}__{slug}{ext}"
+                  path=pathlib.Path('previews')/filename
+                  try:
+                      req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+                      with urllib.request.urlopen(req,timeout=30) as src, open(path,'wb') as dst:
+                          dst.write(src.read())
+                      metadata.append({'artist':artist,'title':title,'track_id':track_id,'filename':filename,'preview_url':url,'collection':r.get('collectionName'),'release_date':r.get('releaseDate')})
+                      print(artist, title, path.stat().st_size)
+                  except Exception as e:
+                      print('FAILED',artist,title,repr(e))
+                  time.sleep(0.05)
+          pathlib.Path('metadata.json').write_text(json.dumps(metadata,indent=2,ensure_ascii=False),encoding='utf-8')
+          print('downloaded',len(metadata),'previews')
           PY
-          cat results/catalog-summary.txt
-      - name: Upload catalog results
+          du -sh previews
+      - name: Upload complete preview batch
         uses: actions/upload-artifact@v4
         with:
-          name: catalog-results-v2
-          path: results
+          name: full-reference-catalog-previews
+          path: |
+            previews
+            metadata.json
           retention-days: 1
