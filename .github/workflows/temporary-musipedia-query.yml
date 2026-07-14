@@ -1,0 +1,43 @@
+name: Temporary Musipedia melody query
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query Musipedia contour search
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'
+          BASE='https://www.musipedia.org/melodic_contour.html'
+          curl -A "$UA" -fLsS -c cookies.txt "$BASE" -o results/form.html
+          for item in \
+            'consensus:*RRUDRDUDRDRURDU' \
+            'short:*RRUDRDUDRDR' \
+            'variant1:*RRUDRDDUDDRURDU' \
+            'variant2:*RRUDRDUDRDRURD' \
+            'variant3:*RRUDRDUDRDRU'; do
+              name="${item%%:*}"
+              code="${item#*:}"
+              curl -A "$UA" -fLsS -b cookies.txt -c cookies.txt \
+                --data-urlencode "tx_mpsearch_pi1[pc]=$code" \
+                --data-urlencode 'tx_mpsearch_pi1[submit_button]=Search' \
+                "$BASE" -o "results/${name}.html"
+              echo "$name $code $(wc -c < results/${name}.html) bytes"
+          done
+          grep -RniE 'result|similar|title|composer|artist|melody|no match|nothing found' results | head -300 > results/grep-summary.txt || true
+          ls -lh results
+      - name: Upload query results
+        uses: actions/upload-artifact@v4
+        with:
+          name: musipedia-query-results
+          path: results
+          retention-days: 1
