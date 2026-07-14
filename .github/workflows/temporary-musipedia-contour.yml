@@ -1,0 +1,45 @@
+name: Temporary Musipedia contour search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query contour database
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir results
+          python - <<'PY'
+          import pathlib, urllib.parse, urllib.request
+          base='https://www.musipedia.org/melodic_contour.html'
+          contours=['*DUUDDUUDDUDUDD','*DUUDDUUDDUDD','*DUUDDUUDD','*DUUD','*DUUDDUUD']
+          for i,pc in enumerate(contours):
+              data=urllib.parse.urlencode({'tx_mpsearch_pi1[pc]':pc,'tx_mpsearch_pi1[submit_button]':'Search'}).encode()
+              for method in ('POST','GET'):
+                  try:
+                      if method=='POST':
+                          req=urllib.request.Request(base,data=data,headers={'User-Agent':'Mozilla/5.0','Content-Type':'application/x-www-form-urlencoded'})
+                      else:
+                          req=urllib.request.Request(base+'?'+data.decode(),headers={'User-Agent':'Mozilla/5.0'})
+                      with urllib.request.urlopen(req,timeout=45) as r: body=r.read()
+                      pathlib.Path(f'results/{i}-{method.lower()}.html').write_bytes(body)
+                      print(pc,method,'status',len(body),r.geturl())
+                  except Exception as e:
+                      pathlib.Path(f'results/{i}-{method.lower()}-error.txt').write_text(repr(e))
+                      print(pc,method,'ERROR',repr(e))
+          PY
+          grep -RniE 'result|title|artist|match|song' results/*.html | head -300 > results/extract.txt || true
+          cat results/extract.txt
+      - name: Upload contour results
+        uses: actions/upload-artifact@v4
+        with:
+          name: musipedia-contour-results
+          path: results
+          retention-days: 1
