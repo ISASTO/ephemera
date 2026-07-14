@@ -1,4 +1,4 @@
-name: Temporary expanded dream-alt catalog C
+name: Temporary expanded top vocal verification
 
 on:
   pull_request:
@@ -8,94 +8,49 @@ permissions:
   contents: read
 
 jobs:
-  screen:
+  analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Install analysis dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
-          pip install --quiet numpy scipy librosa
-      - name: Fetch catalogs and screen refined motif
+          pip install --quiet numpy demucs
+      - name: Download expanded-catalog top previews
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p previews catalogs shortlist
-          python - <<'PY'
-          import json, pathlib, re, shutil, subprocess, time, urllib.parse, urllib.request
-          import numpy as np
-          import librosa
-
-          artists=[
-            'Daughter','London Grammar','Ethel Cain','Caroline Polachek',
-            'FKA twigs','Lana Del Rey','Lorde','Billie Eilish',
-            'Lykke Li','BANKS','Bat for Lashes','Metric',
-            'Hatchie','beabadoobee','Japanese Breakfast','The Marías'
-          ]
-          event_times=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
-          event_pcs=(np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88])%12).astype(int)
-          sr=8000; hop=256
-          def fetch_json(url):
-            req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 melody-research/1.0'})
-            with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
-          def decode(path):
-            p=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True,check=True)
-            return np.frombuffer(p.stdout,dtype='<f4')
-          def score(path):
-            y=decode(path); C=librosa.feature.chroma_stft(y=y,sr=sr,n_fft=1024,hop_length=hop,n_chroma=12)
-            C=C/(C.sum(axis=0,keepdims=True)+1e-8); fps=sr/hop; best=None
-            for scale in np.arange(.82,1.211,.04):
-              rel=np.rint(event_times*scale*fps).astype(int); span=rel[-1]+1
-              starts=np.arange(0,max(0,C.shape[1]-span),2)
-              if not len(starts):continue
-              cols=starts[:,None]+rel[None,:]
-              for tr in range(12):
-                pcs=(event_pcs+tr)%12; vals=C[pcs[None,:],cols]
-                mean=vals.mean(axis=1)
-                g1=vals[:,0:4].mean(axis=1);g2=vals[:,4:8].mean(axis=1);g3=vals[:,8:11].mean(axis=1);g4=vals[:,11:15].mean(axis=1)
-                floor=np.minimum.reduce([g1,g2,g3,g4]); repeat=-np.abs(g1-g2)
-                s=mean+.30*floor+.12*repeat
-                k=int(np.argmax(s)); rec={'score':float(s[k]),'start':float(starts[k]/fps),'scale':float(scale),'transpose':int(tr),'mean':float(mean[k]),'floor':float(floor[k]),'repeat_score':float(repeat[k])}
-                if best is None or rec['score']>best['score']:best=rec
-            return best
-          rows=[]
-          for artist in artists:
-            params=urllib.parse.urlencode({'term':artist,'entity':'song','limit':200,'country':'US'})
-            data=fetch_json('https://itunes.apple.com/search?'+params)
-            aslug=re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-')
-            pathlib.Path('catalogs',aslug+'.json').write_text(json.dumps(data,indent=2,ensure_ascii=False),encoding='utf-8')
-            seen=set(); count=0
-            for x in data.get('results',[]):
-              if x.get('artistName','').casefold()!=artist.casefold() or not x.get('previewUrl'):continue
-              title=x.get('trackName') or 'untitled'; key=title.casefold()
-              if key in seen:continue
-              seen.add(key); slug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80]
-              tid=str(x.get('trackId','unknown')); fn=f'{aslug}__{tid}__{slug}.m4a'; path=pathlib.Path('previews')/fn
-              try:
-                req=urllib.request.Request(x['previewUrl'],headers={'User-Agent':'Mozilla/5.0'})
-                with urllib.request.urlopen(req,timeout=45) as src,open(path,'wb') as dst:dst.write(src.read())
-                res=score(path); rows.append({'artist':artist,'title':title,'filename':fn,'track_id':tid,'preview_url':x['previewUrl'],'collection':x.get('collectionName'),'release_date':x.get('releaseDate'),**res});count+=1
-              except Exception as e:print('FAILED',artist,title,repr(e))
-              time.sleep(.015)
-            print(artist,count)
-          rows.sort(key=lambda r:r['score'],reverse=True)
-          chosen={r['filename'] for r in rows[:120]}
-          for artist in artists:
-            chosen.update(r['filename'] for r in [x for x in rows if x['artist']==artist][:8])
-          for fn in chosen:
-            p=pathlib.Path('previews')/fn
-            if p.exists():shutil.copy2(p,pathlib.Path('shortlist')/fn)
-          pathlib.Path('rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
-          pathlib.Path('top.tsv').write_text('\n'.join(f"{r['score']:.6f}\t{r['artist']}\t{r['title']}\t{r['start']:.3f}\t{r['scale']:.2f}\t{r['filename']}" for r in rows),encoding='utf-8')
-          print('TOTAL',len(rows),'SHORTLIST',len(chosen))
-          PY
-      - name: Upload screened corpus C
+          mkdir previews
+          curl -fL --retry 3 -o previews/lana-del-rey__beautiful.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/e0/e8/c0/e0e8c03d-6a29-2114-4aa0-3d143f8c9e1b/mzaf_17751327738987684187.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/metric__calculation-theme.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/a0/09/99/a009998a-04b5-5e8b-55cb-f5feae238a70/mzaf_16094605379192449207.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/lana-del-rey__not-all-who-wander.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview124/v4/c0/6c/ad/c06cadf5-94aa-9a42-2425-47977f4cb459/mzaf_309220877555135661.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/london-grammar__call-your-friends.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/34/a9/bb/34a9bb8a-3bb8-5ceb-4eba-5d7b196c6ff0/mzaf_6339799469980933171.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/beabadoobee__girl-song.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/d7/6b/00/d76b0079-b877-16fd-691d-e50b02d900f0/mzaf_9693221626727852105.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/lana-del-rey__candy-necklace.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/e3/d7/cc/e3d7ccca-a4f1-9489-bf60-d24209337931/mzaf_14813441244286008932.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/boa__duvet-acoustic.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/7a/25/a0/7a25a0e3-66fc-d2f2-6797-01bf996dc960/mzaf_17760112228778885343.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/chromatics__moment-to-remember.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/7f/f3/34/7ff3341d-8be7-6f31-48c8-a299e9526f09/mzaf_6565168631826394461.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/the-sundays__your-eyes.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/cd/73/07/cd730759-91ad-9f58-417a-8ccd613fd5fc/mzaf_17328707034533387758.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/beach-bunny__boys-live.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/b2/29/80/b2298049-4ead-01ae-e5fc-829c7e280076/mzaf_3946366282101449809.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/beach-bunny__karaoke.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/ca/5c/94/ca5c946c-49c2-5de8-e12b-ca5704332445/mzaf_12787462848110862901.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/cocteau-twins__alice.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/04/f9/39/04f9390b-e494-5cd6-4745-9a8cdcf98846/mzaf_18438401313398837512.plus.aac.p.m4a'
+      - name: Convert and isolate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for file in previews/*.m4a; do
+            base="$(basename "$file" .m4a)"
+            ffmpeg -v error -y -i "$file" -ar 44100 -ac 2 "wavs/${base}.wav"
+          done
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+      - name: Upload expanded top vocals
         uses: actions/upload-artifact@v4
         with:
-          name: expanded-corpus-c
-          path: |
-            shortlist
-            rankings.json
-            top.tsv
-            catalogs
+          name: expanded-top-vocals
+          path: vocal-stems/*.wav
           retention-days: 1
