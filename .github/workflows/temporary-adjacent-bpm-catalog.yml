@@ -1,4 +1,4 @@
-name: Temporary full adjacent catalog fetch
+name: Temporary screened adjacent catalog
 
 on:
   pull_request:
@@ -8,74 +8,112 @@ permissions:
   contents: read
 
 jobs:
-  fetch:
+  screen:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch exact-artist Apple catalogs and previews
+      - name: Install analysis dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy scipy librosa
+      - name: Fetch exact-artist catalogs and screen the motif
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p previews catalogs
+          mkdir -p previews catalogs shortlist
           python - <<'PY'
-          import json, pathlib, re, time, urllib.parse, urllib.request
+          import json, pathlib, re, shutil, subprocess, time, urllib.parse, urllib.request
+          import numpy as np
+          import librosa
 
           artists = [
               'Cults', 'Beach House', 'Men I Trust', 'Magdalena Bay',
               'Purity Ring', 'The Japanese House', 'Wolf Alice',
               'Weyes Blood', 'Yumi Zouma'
           ]
+          event_times=np.array([0.45,1.35,1.90,2.15,2.85,3.60,4.25,4.55,5.20,5.95,6.55,6.80,7.30,7.85,8.12,8.38])
+          event_pcs=(np.array([85,83,90,93,85,83,90,93,85,83,90,93,90,93,90,88])%12).astype(int)
+          sr=8000; hop=256
 
           def fetch_json(url):
               req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 melody-research/1.0'})
               with urllib.request.urlopen(req,timeout=45) as r:
                   return json.load(r)
 
+          def decode(path):
+              proc=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True,check=True)
+              return np.frombuffer(proc.stdout,dtype='<f4')
+
+          def motif_score(path):
+              y=decode(path)
+              C=librosa.feature.chroma_stft(y=y,sr=sr,n_fft=1024,hop_length=hop,n_chroma=12)
+              C=C/(np.sum(C,axis=0,keepdims=True)+1e-8)
+              fps=sr/hop
+              best=None
+              for scale in np.arange(.86,1.181,.04):
+                  idx_rel=np.rint(event_times*scale*fps).astype(int)
+                  span=idx_rel[-1]+1
+                  starts=np.arange(0,max(0,C.shape[1]-span),2)
+                  if len(starts)==0: continue
+                  cols=starts[:,None]+idx_rel[None,:]
+                  for tr in range(12):
+                      pcs=(event_pcs+tr)%12
+                      vals=C[pcs[None,:],cols]
+                      expected=vals.mean(axis=1)
+                      cycles=vals[:,:12].reshape(len(starts),3,4)
+                      cycle_floor=cycles.min(axis=1).mean(axis=1)
+                      closing=vals[:,12:].mean(axis=1)
+                      scores=expected+0.45*(expected-1/12)+0.18*cycle_floor+0.12*closing
+                      k=int(np.argmax(scores))
+                      rec={'score':float(scores[k]),'start':float(starts[k]/fps),'scale':float(scale),'transpose':int(tr),'expected_mean':float(expected[k]),'cycle_floor':float(cycle_floor[k]),'closing':float(closing[k])}
+                      if best is None or rec['score']>best['score']: best=rec
+              return best
+
           metadata=[]
           for artist in artists:
               params=urllib.parse.urlencode({'term':artist,'entity':'song','limit':200,'country':'US'})
               data=fetch_json('https://itunes.apple.com/search?'+params)
-              pathlib.Path('catalogs',re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-')+'.json').write_text(
-                  json.dumps(data,indent=2,ensure_ascii=False),encoding='utf-8')
-              rows=[]; seen=set()
+              artist_slug=re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-')
+              pathlib.Path('catalogs',artist_slug+'.json').write_text(json.dumps(data,indent=2,ensure_ascii=False),encoding='utf-8')
+              seen=set()
               for r in data.get('results',[]):
-                  if r.get('artistName','').casefold()!=artist.casefold():
-                      continue
-                  title=r.get('trackName') or 'untitled'
-                  key=title.casefold()
-                  if key in seen or not r.get('previewUrl'):
-                      continue
+                  if r.get('artistName','').casefold()!=artist.casefold() or not r.get('previewUrl'): continue
+                  title=r.get('trackName') or 'untitled'; key=title.casefold()
+                  if key in seen: continue
                   seen.add(key)
-                  rows.append(r)
-              print(artist,len(rows),'unique previews')
-              for r in rows:
-                  title=r.get('trackName') or 'untitled'
                   slug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80]
-                  artist_slug=re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-')
                   tid=str(r.get('trackId','unknown'))
-                  filename=f'{artist_slug}__{tid}__{slug}.m4a'
-                  path=pathlib.Path('previews')/filename
+                  filename=f'{artist_slug}__{tid}__{slug}.m4a'; path=pathlib.Path('previews')/filename
                   try:
                       req=urllib.request.Request(r['previewUrl'],headers={'User-Agent':'Mozilla/5.0'})
-                      with urllib.request.urlopen(req,timeout=45) as src, open(path,'wb') as dst:
-                          dst.write(src.read())
-                      metadata.append({
-                          'artist':artist,'title':title,'track_id':tid,'filename':filename,
-                          'preview_url':r['previewUrl'],'collection':r.get('collectionName'),
-                          'release_date':r.get('releaseDate')
-                      })
+                      with urllib.request.urlopen(req,timeout=45) as src, open(path,'wb') as dst: dst.write(src.read())
+                      result=motif_score(path)
+                      metadata.append({'artist':artist,'title':title,'track_id':tid,'filename':filename,'collection':r.get('collectionName'),'release_date':r.get('releaseDate'),**result})
+                      print(artist,title,result['score'])
                   except Exception as e:
                       print('FAILED',artist,title,repr(e))
-                  time.sleep(0.03)
-          pathlib.Path('metadata.json').write_text(json.dumps(metadata,indent=2,ensure_ascii=False),encoding='utf-8')
-          print('TOTAL DOWNLOADED',len(metadata))
+                  time.sleep(.02)
+
+          metadata.sort(key=lambda r:r['score'],reverse=True)
+          chosen={r['filename'] for r in metadata[:100]}
+          for artist in artists:
+              rows=[r for r in metadata if r['artist']==artist]
+              chosen.update(r['filename'] for r in rows[:12])
+          for name in chosen:
+              src=pathlib.Path('previews')/name
+              if src.exists(): shutil.copy2(src,pathlib.Path('shortlist')/name)
+          pathlib.Path('rankings.json').write_text(json.dumps(metadata,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('top.tsv').write_text('\n'.join(f"{r['score']:.6f}\t{r['artist']}\t{r['title']}\t{r['start']:.3f}\t{r['scale']:.2f}\t{r['filename']}" for r in metadata),encoding='utf-8')
+          print('TOTAL SCORED',len(metadata),'SHORTLIST FILES',len(chosen))
           PY
-          du -sh previews
-      - name: Upload full adjacent catalogs
+          du -sh shortlist
+      - name: Upload screened adjacent catalog
         uses: actions/upload-artifact@v4
         with:
-          name: full-adjacent-catalog-previews
+          name: screened-adjacent-catalog
           path: |
-            previews
+            shortlist
+            rankings.json
+            top.tsv
             catalogs
-            metadata.json
           retention-days: 1
