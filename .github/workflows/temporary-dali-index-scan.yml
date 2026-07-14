@@ -1,4 +1,4 @@
-name: Temporary DALI Zenodo inspection
+name: Temporary expanded dream-alt catalog C
 
 on:
   pull_request:
@@ -8,38 +8,94 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  screen:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect DALI Zenodo release
+      - name: Install analysis dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy scipy librosa
+      - name: Fetch catalogs and screen refined motif
         shell: bash
         run: |
           set -euo pipefail
-          mkdir results
-          curl -fLsS 'https://zenodo.org/api/records/2577915' -o results/record.json
+          mkdir -p previews catalogs shortlist
           python - <<'PY'
-          import json, pathlib
-          d=json.load(open('results/record.json'))
-          print('title',d.get('metadata',{}).get('title'))
-          lines=[]
-          for f in d.get('files',[]):
-              links=f.get('links',{})
-              row={
-                  'key':f.get('key'),
-                  'size':f.get('size'),
-                  'checksum':f.get('checksum'),
-                  'self':links.get('self'),
-                  'download':links.get('content') or links.get('self')
-              }
-              lines.append(row)
-              print(row)
-          pathlib.Path('results/files.json').write_text(json.dumps(lines,indent=2),encoding='utf-8')
-          pathlib.Path('results/files.tsv').write_text('\n'.join(f"{x['size']}\t{x['key']}\t{x['download']}" for x in lines),encoding='utf-8')
+          import json, pathlib, re, shutil, subprocess, time, urllib.parse, urllib.request
+          import numpy as np
+          import librosa
+
+          artists=[
+            'Daughter','London Grammar','Ethel Cain','Caroline Polachek',
+            'FKA twigs','Lana Del Rey','Lorde','Billie Eilish',
+            'Lykke Li','BANKS','Bat for Lashes','Metric',
+            'Hatchie','beabadoobee','Japanese Breakfast','The Marías'
+          ]
+          event_times=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
+          event_pcs=(np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88])%12).astype(int)
+          sr=8000; hop=256
+          def fetch_json(url):
+            req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 melody-research/1.0'})
+            with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
+          def decode(path):
+            p=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True,check=True)
+            return np.frombuffer(p.stdout,dtype='<f4')
+          def score(path):
+            y=decode(path); C=librosa.feature.chroma_stft(y=y,sr=sr,n_fft=1024,hop_length=hop,n_chroma=12)
+            C=C/(C.sum(axis=0,keepdims=True)+1e-8); fps=sr/hop; best=None
+            for scale in np.arange(.82,1.211,.04):
+              rel=np.rint(event_times*scale*fps).astype(int); span=rel[-1]+1
+              starts=np.arange(0,max(0,C.shape[1]-span),2)
+              if not len(starts):continue
+              cols=starts[:,None]+rel[None,:]
+              for tr in range(12):
+                pcs=(event_pcs+tr)%12; vals=C[pcs[None,:],cols]
+                mean=vals.mean(axis=1)
+                g1=vals[:,0:4].mean(axis=1);g2=vals[:,4:8].mean(axis=1);g3=vals[:,8:11].mean(axis=1);g4=vals[:,11:15].mean(axis=1)
+                floor=np.minimum.reduce([g1,g2,g3,g4]); repeat=-np.abs(g1-g2)
+                s=mean+.30*floor+.12*repeat
+                k=int(np.argmax(s)); rec={'score':float(s[k]),'start':float(starts[k]/fps),'scale':float(scale),'transpose':int(tr),'mean':float(mean[k]),'floor':float(floor[k]),'repeat_score':float(repeat[k])}
+                if best is None or rec['score']>best['score']:best=rec
+            return best
+          rows=[]
+          for artist in artists:
+            params=urllib.parse.urlencode({'term':artist,'entity':'song','limit':200,'country':'US'})
+            data=fetch_json('https://itunes.apple.com/search?'+params)
+            aslug=re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-')
+            pathlib.Path('catalogs',aslug+'.json').write_text(json.dumps(data,indent=2,ensure_ascii=False),encoding='utf-8')
+            seen=set(); count=0
+            for x in data.get('results',[]):
+              if x.get('artistName','').casefold()!=artist.casefold() or not x.get('previewUrl'):continue
+              title=x.get('trackName') or 'untitled'; key=title.casefold()
+              if key in seen:continue
+              seen.add(key); slug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80]
+              tid=str(x.get('trackId','unknown')); fn=f'{aslug}__{tid}__{slug}.m4a'; path=pathlib.Path('previews')/fn
+              try:
+                req=urllib.request.Request(x['previewUrl'],headers={'User-Agent':'Mozilla/5.0'})
+                with urllib.request.urlopen(req,timeout=45) as src,open(path,'wb') as dst:dst.write(src.read())
+                res=score(path); rows.append({'artist':artist,'title':title,'filename':fn,'track_id':tid,'preview_url':x['previewUrl'],'collection':x.get('collectionName'),'release_date':x.get('releaseDate'),**res});count+=1
+              except Exception as e:print('FAILED',artist,title,repr(e))
+              time.sleep(.015)
+            print(artist,count)
+          rows.sort(key=lambda r:r['score'],reverse=True)
+          chosen={r['filename'] for r in rows[:120]}
+          for artist in artists:
+            chosen.update(r['filename'] for r in [x for x in rows if x['artist']==artist][:8])
+          for fn in chosen:
+            p=pathlib.Path('previews')/fn
+            if p.exists():shutil.copy2(p,pathlib.Path('shortlist')/fn)
+          pathlib.Path('rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('top.tsv').write_text('\n'.join(f"{r['score']:.6f}\t{r['artist']}\t{r['title']}\t{r['start']:.3f}\t{r['scale']:.2f}\t{r['filename']}" for r in rows),encoding='utf-8')
+          print('TOTAL',len(rows),'SHORTLIST',len(chosen))
           PY
-          cat results/files.tsv
-      - name: Upload Zenodo inspection
+      - name: Upload screened corpus C
         uses: actions/upload-artifact@v4
         with:
-          name: dali-zenodo-inspection
-          path: results
+          name: expanded-corpus-c
+          path: |
+            shortlist
+            rankings.json
+            top.tsv
+            catalogs
           retention-days: 1
