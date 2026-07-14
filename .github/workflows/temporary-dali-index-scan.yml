@@ -1,0 +1,32 @@
+name: Temporary DALI index scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone and inspect official DALI repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/gabolsgabs/DALI.git dali-repo
+          mkdir results
+          find dali-repo/versions -maxdepth 5 -type f -printf '%s\t%p\n' | sort -n > results/version-files.tsv
+          find dali-repo -type f \( -name '*.gz' -o -name '*.zip' -o -name '*.tar*' \) -printf '%s\t%p\n' | sort -n > results/archives.tsv
+          grep -RniE 'https?://|download|drive|zenodo|figshare' dali-repo/versions dali-repo/README.md > results/download-links.txt || true
+          du -sh dali-repo
+          cat results/version-files.tsv
+          cat results/archives.tsv
+          cat results/download-links.txt
+      - name: Upload inspection results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dali-index-inspection
+          path: results
+          retention-days: 1
