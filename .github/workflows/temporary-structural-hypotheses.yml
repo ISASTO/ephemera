@@ -1,0 +1,84 @@
+name: Temporary structural melody hypotheses
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy demucs
+      - name: Resolve exact Apple tracks and download previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previews metadata
+          python - <<'PY'
+          import json, pathlib, re, urllib.parse, urllib.request
+
+          targets=[
+              ('Beach House','Space Song'),
+              ('Cults','Always Forever'),
+              ('Cults','Gilded Lily'),
+              ('Phantogram','Black Out Days'),
+              ('Wolf Alice','How Can I Make It OK?'),
+              ('Wolf Alice','Lipstick on the Glass'),
+              ('Wolf Alice',"Don't Delete the Kisses"),
+              ('Magdalena Bay','Killshot'),
+              ('Magdalena Bay','Secrets (Your Fire)'),
+              ('Purity Ring','Fineshrine'),
+              ('No Vacation','Yam Yam'),
+              ('Men I Trust','Numb'),
+              ('Men I Trust','Billie Toppy'),
+              ('Beach House','Silver Soul'),
+              ('Cults','Offering')
+          ]
+          rows=[]
+          for artist,title in targets:
+              params=urllib.parse.urlencode({'term':f'{artist} {title}','entity':'song','limit':50,'country':'US'})
+              req=urllib.request.Request('https://itunes.apple.com/search?'+params,headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(req,timeout=30) as r: data=json.load(r)
+              exact=[x for x in data.get('results',[]) if x.get('artistName','').casefold()==artist.casefold() and x.get('trackName','').casefold()==title.casefold() and x.get('previewUrl')]
+              if not exact:
+                  print('NO EXACT',artist,title); continue
+              x=exact[0]
+              slug=re.sub(r'[^a-z0-9]+','-',f'{artist}-{title}'.casefold()).strip('-')
+              fn=f'{slug}__{x.get("trackId")}.m4a'
+              req=urllib.request.Request(x['previewUrl'],headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(req,timeout=30) as src, open(pathlib.Path('previews')/fn,'wb') as dst: dst.write(src.read())
+              rows.append({'artist':artist,'title':title,'filename':fn,'track_id':x.get('trackId'),'preview_url':x['previewUrl'],'collection':x.get('collectionName'),'release_date':x.get('releaseDate')})
+              print('DOWNLOADED',artist,title,fn)
+          pathlib.Path('metadata/targets.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          PY
+      - name: Convert and isolate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for file in previews/*.m4a; do
+            base="$(basename "$file" .m4a)"
+            ffmpeg -v error -y -i "$file" -ar 44100 -ac 2 "wavs/${base}.wav"
+          done
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+      - name: Upload structural hypothesis audio
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-hypothesis-vocals
+          path: |
+            vocal-stems/*.wav
+            previews/*.m4a
+            metadata/targets.json
+          retention-days: 1
