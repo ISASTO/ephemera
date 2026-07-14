@@ -1,4 +1,4 @@
-name: Temporary adjacent BPM catalog
+name: Temporary adjacent vocal scan
 
 on:
   pull_request:
@@ -8,101 +8,60 @@ permissions:
   contents: read
 
 jobs:
-  catalog:
+  scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Query adjacent-artist catalogs and BPM
+      - name: Download tempo-filtered previews
         shell: bash
         run: |
           set -euo pipefail
-          mkdir results
-          python - <<'PY'
-          import json, pathlib, time, urllib.parse, urllib.request
-
-          artists = [
-              'Cults', 'Beach House', 'Men I Trust', 'Magdalena Bay',
-              'Night Tapes', 'Slow Pulp', 'Crumb', 'Yumi Zouma', 'TOPS',
-              'Fazerdaze', 'Wolf Alice', 'The Japanese House',
-              'Purity Ring', 'Weyes Blood', 'Blondshell', 'Momma'
-          ]
-
-          def get(url, attempts=5):
-              for attempt in range(attempts):
-                  try:
-                      req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0 melody-research/1.0'})
-                      with urllib.request.urlopen(req, timeout=30) as r:
-                          data = json.load(r)
-                      if isinstance(data, dict) and data.get('error'):
-                          raise RuntimeError(data['error'])
-                      return data
-                  except Exception as e:
-                      if attempt == attempts - 1:
-                          print('FAILED', url, repr(e))
-                          return None
-                      time.sleep(1.5 * (attempt + 1))
-
-          all_rows=[]
-          for artist_name in artists:
-              q=urllib.parse.quote(f'artist:"{artist_name}"')
-              search=get(f'https://api.deezer.com/search/artist?q={q}&limit=25') or {}
-              exact=[a for a in search.get('data',[]) if a.get('name','').casefold()==artist_name.casefold()]
-              if not exact:
-                  print('NO EXACT ARTIST',artist_name)
-                  continue
-              artist=exact[0]
-              aid=artist['id']
-              tracks=get(f'https://api.deezer.com/artist/{aid}/top?limit=100') or {}
-              seen=set(); kept=0
-              for item in tracks.get('data',[]):
-                  title=item.get('title_short') or item.get('title')
-                  if not title or title.casefold() in seen:
-                      continue
-                  seen.add(title.casefold())
-                  detail=get(f"https://api.deezer.com/track/{item['id']}") or {}
-                  bpm=detail.get('bpm') or 0
-                  if not bpm:
-                      continue
-                  normalized=float(bpm)
-                  while normalized > 160: normalized /= 2
-                  while normalized < 70: normalized *= 2
-                  album=detail.get('album') or {}
-                  album_detail=get(f"https://api.deezer.com/album/{album.get('id')}") if album.get('id') else {}
-                  album_detail=album_detail or {}
-                  release=album_detail.get('release_date')
-                  year=int(release[:4]) if release and release[:4].isdigit() else None
-                  row={
-                      'artist':artist_name,
-                      'artist_id':aid,
-                      'title':title,
-                      'track_id':detail.get('id'),
-                      'bpm':float(bpm),
-                      'normalized_bpm':normalized,
-                      'duration':detail.get('duration'),
-                      'rank':detail.get('rank'),
-                      'preview':detail.get('preview'),
-                      'album':album.get('title'),
-                      'release_date':release,
-                      'year':year,
-                      'link':detail.get('link')
-                  }
-                  all_rows.append(row)
-                  if 94 <= normalized <= 119 and (year is None or year >= 2009) and row['preview']:
-                      kept += 1
-                  time.sleep(0.04)
-              print(artist_name, 'tracks', len(seen), 'tempo-window', kept)
-
-          shortlist=[r for r in all_rows if 94 <= r['normalized_bpm'] <= 119 and (r['year'] is None or r['year'] >= 2009) and r['preview']]
-          shortlist.sort(key=lambda r:(abs(r['normalized_bpm']-105.14), -(r['rank'] or 0)))
-          pathlib.Path('results/all-tracks.json').write_text(json.dumps(all_rows,indent=2,ensure_ascii=False),encoding='utf-8')
-          pathlib.Path('results/shortlist.json').write_text(json.dumps(shortlist,indent=2,ensure_ascii=False),encoding='utf-8')
-          lines=[f"{r['artist']}\t{r['title']}\t{r['bpm']:.2f}\t{r['normalized_bpm']:.2f}\t{r['release_date']}\t{r['preview']}" for r in shortlist]
-          pathlib.Path('results/shortlist.tsv').write_text('\n'.join(lines),encoding='utf-8')
-          print('TOTAL SHORTLIST',len(shortlist))
-          print('\n'.join(lines[:100]))
-          PY
-      - name: Upload catalog results
+          mkdir previews
+          cat > candidates.tsv <<'EOF'
+          purity-ring__belispeak-ii	https://cdnt-preview.dzcdn.net/api/1/1/c/d/4/0/cd46c43cf6b022b632645a9bee0f6129.mp3?hdnea=exp=1784060346~acl=/api/1/1/c/d/4/0/cd46c43cf6b022b632645a9bee0f6129.mp3*~data=user_id=0,application_id=42~hmac=8ed46fbf8c0cb563fb6e3eb154899019f8a3f3b6c227752fcf59eb7d907cf7d6
+          wolf-alice__beautifully-unconventional	https://cdnt-preview.dzcdn.net/api/1/1/e/f/7/0/ef7a41a7b3d54778f7e812e842d92617.mp3?hdnea=exp=1784060309~acl=/api/1/1/e/f/7/0/ef7a41a7b3d54778f7e812e842d92617.mp3*~data=user_id=0,application_id=42~hmac=04f6168a156593ae793f5dc78847336d23df295acaf7cf911d610327a7ea6674
+          weyes-blood__suddenly	https://cdnt-preview.dzcdn.net/api/1/1/5/f/8/0/5f8d070f73726a114f8caa5eba0b6700.mp3?hdnea=exp=1784060350~acl=/api/1/1/5/f/8/0/5f8d070f73726a114f8caa5eba0b6700.mp3*~data=user_id=0,application_id=42~hmac=ae20563fa4e9e5dec267a8a44b9fc9b96b9454a6397ae3d6725c2155536a7a18
+          yumi-zouma__crush-its-late-just-stay	https://cdnt-preview.dzcdn.net/api/1/1/e/1/b/0/e1b364af980e7305b4384ff54c45161b.mp3?hdnea=exp=1784060294~acl=/api/1/1/e/1/b/0/e1b364af980e7305b4384ff54c45161b.mp3*~data=user_id=0,application_id=42~hmac=0ba4c20033d898c7cc08a551ecbb9ea4a6e2a867b8e10660ff0a50c68fdb686e
+          the-japanese-house__somebody-you-found	https://cdnt-preview.dzcdn.net/api/1/1/3/c/6/0/3c69115c7002a9d9713b088f96c31434.mp3?hdnea=exp=1784060335~acl=/api/1/1/3/c/6/0/3c69115c7002a9d9713b088f96c31434.mp3*~data=user_id=0,application_id=42~hmac=abc2be89004f4e317b2416bb57a9d780ec3425216345fabeeee6ef1d6a8c4e69
+          the-japanese-house__good-side-in	https://cdnt-preview.dzcdn.net/api/1/1/2/0/5/0/20580952312809c26af2a5b58d819427.mp3?hdnea=exp=1784060331~acl=/api/1/1/2/0/5/0/20580952312809c26af2a5b58d819427.mp3*~data=user_id=0,application_id=42~hmac=25414bccf2474b8b60a13bc707debd46571132449766440f0884862aa05f8d8c
+          wolf-alice__storms	https://cdnt-preview.dzcdn.net/api/1/1/e/c/d/0/ecde69467305d64d7f6165efef9292e0.mp3?hdnea=exp=1784060317~acl=/api/1/1/e/c/d/0/ecde69467305d64d7f6165efef9292e0.mp3*~data=user_id=0,application_id=42~hmac=eba1db084f5e74bc6adf983e148667487ada3b2d67e0f33c37aba8afefb664aa
+          purity-ring__begin-again	https://cdnt-preview.dzcdn.net/api/1/1/6/7/a/0/67a42d71a2f6cf411fe61492b520cda5.mp3?hdnea=exp=1784060347~acl=/api/1/1/6/7/a/0/67a42d71a2f6cf411fe61492b520cda5.mp3*~data=user_id=0,application_id=42~hmac=a85928de15cbd80b8331186996d0db548d9902e944ce2d9274505a224ba7f4a5
+          wolf-alice__the-wonderwhy	https://cdnt-preview.dzcdn.net/api/1/1/2/7/6/0/27657ebadc490bafc10e29f392c3aa68.mp3?hdnea=exp=1784060318~acl=/api/1/1/2/7/6/0/27657ebadc490bafc10e29f392c3aa68.mp3*~data=user_id=0,application_id=42~hmac=8739cde0751820dd457971c847f586fca90500780fd70bc6065268c79bafb2ee
+          wolf-alice__freazy	https://cdnt-preview.dzcdn.net/api/1/1/6/3/0/0/63070f001deaa4e9ea400d8d07e530e7.mp3?hdnea=exp=1784060314~acl=/api/1/1/6/3/0/0/63070f001deaa4e9ea400d8d07e530e7.mp3*~data=user_id=0,application_id=42~hmac=2a4044a6870e4b8a11e79a5f985e487927bf03fa46bb5007ff4032e2c1c742a6
+          wolf-alice__moaning-lisa-smile	https://cdnt-preview.dzcdn.net/api/1/1/d/5/f/0/d5fdd7094e229f65a84879237b32ef27.mp3?hdnea=exp=1784060305~acl=/api/1/1/d/5/f/0/d5fdd7094e229f65a84879237b32ef27.mp3*~data=user_id=0,application_id=42~hmac=7120c95f227bb0d999b5f287bc8b30c5cd3e22f98d9f8cf502825bee78f4a3fb
+          weyes-blood__the-end-of-comedy	https://cdnt-preview.dzcdn.net/api/1/1/f/c/9/0/fc93c038357fba416000a63e1cb314e1.mp3?hdnea=exp=1784060353~acl=/api/1/1/f/c/9/0/fc93c038357fba416000a63e1cb314e1.mp3*~data=user_id=0,application_id=42~hmac=b933b4a0ddd10e97f6440118cc6079549c5d1169da35ca3ea7bfd939c471f678
+          wolf-alice__heavenly-creatures	https://cdnt-preview.dzcdn.net/api/1/1/8/f/4/0/8f4e180f65cc3a8f6ff8f49c5c39314c.mp3?hdnea=exp=1784060316~acl=/api/1/1/8/f/4/0/8f4e180f65cc3a8f6ff8f49c5c39314c.mp3*~data=user_id=0,application_id=42~hmac=0f56fae2128e36bb43329caa9760feb30269dbf2ac830d1230cc4ed1e00339df
+          wolf-alice__blush	https://cdnt-preview.dzcdn.net/api/1/1/c/4/6/0/c46ce96de0c3d79443591353ac740ed1.mp3?hdnea=exp=1784060309~acl=/api/1/1/c/4/6/0/c46ce96de0c3d79443591353ac740ed1.mp3*~data=user_id=0,application_id=42~hmac=4050dd1903426d55d0f39d4e6ae4b07ae856b7df4fbe919f57b62121ef4efe51
+          the-japanese-house__sister	https://cdnt-preview.dzcdn.net/api/1/1/1/b/0/0/1b07f1882327e7f51320b262200efecd.mp3?hdnea=exp=1784060332~acl=/api/1/1/1/b/0/0/1b07f1882327e7f51320b262200efecd.mp3*~data=user_id=0,application_id=42~hmac=e72127167808c58ba2ffa8cbcf19b7bdcf96f026cb0447507b79840f0c7f779e
+          magdalena-bay__head-over-heels	https://cdnt-preview.dzcdn.net/api/1/1/5/6/6/0/5669bce5d1cedc428f40a6293e2cac97.mp3?hdnea=exp=1784060280~acl=/api/1/1/5/6/6/0/5669bce5d1cedc428f40a6293e2cac97.mp3*~data=user_id=0,application_id=42~hmac=70438df89f850c5720da2d856c2cdacb5c787cb49362e6ba7e4289a581466376
+          the-japanese-house__swim-against-the-tide	https://cdnt-preview.dzcdn.net/api/1/1/1/c/6/0/1c672d229203b4aacdec0be6b6fea502.mp3?hdnea=exp=1784060329~acl=/api/1/1/1/c/6/0/1c672d229203b4aacdec0be6b6fea502.mp3*~data=user_id=0,application_id=42~hmac=e67f61e97439037b9a1b4d1797f4fe594b563ef75ea2a42e76b21fe9959a8bb3
+          the-japanese-house__went-to-meet-her-intro	https://cdnt-preview.dzcdn.net/api/1/1/8/b/3/0/8b3dcbeb86ffc0e2c933c99227e42b37.mp3?hdnea=exp=1784060332~acl=/api/1/1/8/b/3/0/8b3dcbeb86ffc0e2c933c99227e42b37.mp3*~data=user_id=0,application_id=42~hmac=2facc148fe7291e6b6a0c2ec81e10f41f53272d0a2b18c1a1c8318a48a8d82f4
+          wolf-alice__90-mile-beach	https://cdnt-preview.dzcdn.net/api/1/1/5/b/7/0/5b7f3311be7b6be8e3da839af4da049a.mp3?hdnea=exp=1784060317~acl=/api/1/1/5/b/7/0/5b7f3311be7b6be8e3da839af4da049a.mp3*~data=user_id=0,application_id=42~hmac=42eda34a420191b5ae55c138ecf1666bd426f461d72b43f7c11ca3c70fa2a51a
+          the-japanese-house__maybe-youre-the-reason	https://cdnt-preview.dzcdn.net/api/1/1/b/1/b/0/b1be5d04e666bce3805f70e4a740ad2c.mp3?hdnea=exp=1784060323~acl=/api/1/1/b/1/b/0/b1be5d04e666bce3805f70e4a740ad2c.mp3*~data=user_id=0,application_id=42~hmac=2a13989e7f8f491a8a22e5adb176d574d4de1be7a60f3966919c5f5130ea90a7
+          wolf-alice__leaving-you	https://cdnt-preview.dzcdn.net/api/1/1/9/9/d/0/99da1546c126e83ea599b4bb7f367e8f.mp3?hdnea=exp=1784060320~acl=/api/1/1/9/9/d/0/99da1546c126e83ea599b4bb7f367e8f.mp3*~data=user_id=0,application_id=42~hmac=65537ef8c3aab2b08c9787d1bfc7fe2f8639b30aeba29ead50c285980e54a202
+          EOF
+          while IFS=$'\t' read -r name url; do
+            curl -fL --retry 3 -o "previews/${name}.mp3" "$url"
+          done < candidates.tsv
+          ls -lh previews
+      - name: Install Demucs
+        run: pip install --quiet numpy demucs
+      - name: Isolate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m demucs --two-stems=vocals -o separated previews/*.mp3
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+          ls -lh vocal-stems
+      - name: Upload vocals and previews
         uses: actions/upload-artifact@v4
         with:
-          name: adjacent-bpm-catalog
-          path: results
+          name: adjacent-tempo-vocals
+          path: |
+            vocal-stems/*.wav
+            previews/*.mp3
+            candidates.tsv
           retention-days: 1
