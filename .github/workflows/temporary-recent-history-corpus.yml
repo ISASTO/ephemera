@@ -1,0 +1,75 @@
+name: Temporary recent-history vocal corpus
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy demucs
+      - name: Download exact recent-history artist catalogs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previews metadata
+          python - <<'PY'
+          import json, pathlib, re, time, urllib.parse, urllib.request
+          artists=['Suzy Sheer','ggwendolyn','Wallice','spill tab','See You Next Year','King Princess']
+          rows=[]
+          for artist in artists:
+              params=urllib.parse.urlencode({'term':artist,'entity':'song','limit':200,'country':'US'})
+              req=urllib.request.Request('https://itunes.apple.com/search?'+params,headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(req,timeout=45) as r: data=json.load(r)
+              seen=set(); n=0
+              for x in data.get('results',[]):
+                  if x.get('artistName','').casefold()!=artist.casefold() or not x.get('previewUrl'): continue
+                  title=x.get('trackName') or 'untitled'; key=title.casefold()
+                  if key in seen: continue
+                  seen.add(key)
+                  artist_slug=re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-')
+                  title_slug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80]
+                  fn=f'{artist_slug}__{x.get("trackId")}__{title_slug}.m4a'
+                  try:
+                      req=urllib.request.Request(x['previewUrl'],headers={'User-Agent':'Mozilla/5.0'})
+                      with urllib.request.urlopen(req,timeout=45) as src, open(pathlib.Path('previews')/fn,'wb') as dst: dst.write(src.read())
+                      rows.append({'artist':artist,'title':title,'filename':fn,'track_id':x.get('trackId'),'preview_url':x['previewUrl'],'collection':x.get('collectionName'),'release_date':x.get('releaseDate')})
+                      n+=1
+                  except Exception as e: print('FAILED',artist,title,repr(e))
+                  time.sleep(.02)
+              print(artist,n,'previews')
+          pathlib.Path('metadata/catalog.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          print('TOTAL',len(rows))
+          PY
+      - name: Convert previews and isolate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for file in previews/*.m4a; do
+            base="$(basename "$file" .m4a)"
+            ffmpeg -v error -y -i "$file" -ar 44100 -ac 2 "wavs/${base}.wav"
+          done
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+          ls -lh vocal-stems
+      - name: Upload recent-history vocals
+        uses: actions/upload-artifact@v4
+        with:
+          name: recent-history-vocals
+          path: |
+            vocal-stems/*.wav
+            metadata/catalog.json
+          retention-days: 1
