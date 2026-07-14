@@ -1,4 +1,4 @@
-name: Temporary Musipedia browser contour search
+name: Temporary exact pre-history vocal check
 
 on:
   pull_request:
@@ -8,45 +8,32 @@ permissions:
   contents: read
 
 jobs:
-  search:
+  analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Install browser tools
+      - name: Install dependencies
         run: |
-          pip install --quiet selenium beautifulsoup4
-      - name: Search Musipedia interactively
-        shell: bash
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy demucs
+      - name: Download exact previews
         run: |
-          set -euo pipefail
-          mkdir results
-          python - <<'PY'
-          from selenium import webdriver
-          from selenium.webdriver.common.by import By
-          from selenium.webdriver.chrome.options import Options
-          import pathlib,time
-          opts=Options();opts.add_argument('--headless=new');opts.add_argument('--no-sandbox');opts.add_argument('--disable-dev-shm-usage');opts.add_argument('--window-size=1400,1200')
-          contours=['*DUUDDUUDDUDUDD','*DUUDDUUDDUDD','*DUUDDUUDD','*DUUD','*DUUDDUUD']
-          driver=webdriver.Chrome(options=opts)
-          try:
-            for i,pc in enumerate(contours):
-              driver.get('https://www.musipedia.org/melodic_contour.html');time.sleep(3)
-              pathlib.Path(f'results/{i}-landing.html').write_text(driver.page_source,encoding='utf-8')
-              try:
-                box=driver.find_element(By.NAME,'tx_mpsearch_pi1[pc]');box.clear();box.send_keys(pc)
-                driver.find_element(By.NAME,'tx_mpsearch_pi1[submit_button]').click();time.sleep(5)
-                pathlib.Path(f'results/{i}-results.html').write_text(driver.page_source,encoding='utf-8')
-                driver.save_screenshot(f'results/{i}-results.png')
-                print(pc,driver.title,driver.current_url,len(driver.page_source))
-              except Exception as e:
-                pathlib.Path(f'results/{i}-error.txt').write_text(repr(e))
-                print('ERROR',pc,repr(e))
-          finally: driver.quit()
-          PY
-          grep -RniE 'result|title|artist|match|song|composer' results/*-results.html | head -500 > results/extract.txt || true
-          cat results/extract.txt
-      - name: Upload contour results
+          mkdir previews
+          curl -fL --retry 3 -o previews/let-it-be.mp3 'https://p.scdn.co/mp3-preview/631084f5b7431d8bc1e7bf7a7402e64d2c91c3b6.mp3'
+          curl -fL --retry 3 -o previews/fell-out-of-heaven.mp3 'https://p.scdn.co/mp3-preview/2b9dc8dbcd1887186d06ac6faf90317ce760507a.mp3'
+          curl -fL --retry 3 -o previews/cry-cry-cry.mp3 'https://p.scdn.co/mp3-preview/daae519b2d5285cc28d8a7d95e8f70337cad9f94.mp3'
+          curl -fL --retry 3 -o previews/soft-release.mp3 'https://p.scdn.co/mp3-preview/6a7a321dfa7b708e830c70bf0179b0c6721f4bac.mp3'
+          curl -fL --retry 3 -o previews/other-turn.mp3 'https://p.scdn.co/mp3-preview/d21aab9bd69aa559c3fd76dc825adc75d9ca1816.mp3'
+      - name: Isolate vocals
+        run: |
+          mkdir wavs
+          for f in previews/*.mp3; do b=$(basename "$f" .mp3); ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "wavs/$b.wav"; done
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' f; do b=$(basename "$(dirname "$f")"); cp "$f" "vocal-stems/$b-vocals.wav"; done
+      - name: Upload vocals
         uses: actions/upload-artifact@v4
         with:
-          name: musipedia-browser-results
-          path: results
+          name: exact-prehistory-vocals
+          path: vocal-stems/*.wav
           retention-days: 1
