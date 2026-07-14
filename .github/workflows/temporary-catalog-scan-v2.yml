@@ -1,0 +1,65 @@
+name: Temporary catalog scan v2
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query public music catalogs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir results
+          curl -fsSLG 'https://itunes.apple.com/search' \
+            --data-urlencode 'term=Pearly Drops' \
+            --data 'entity=song' --data 'limit=200' > results/itunes-pearly-drops.json
+          curl -fsSLG 'https://itunes.apple.com/search' \
+            --data-urlencode 'term=NewDad' \
+            --data 'entity=song' --data 'limit=200' > results/itunes-newdad.json
+          curl -fsSLG 'https://musicbrainz.org/ws/2/recording/' \
+            -H 'User-Agent: melody-research/1.0 (temporary analysis)' \
+            --data-urlencode 'query=artist:"Pearly Drops"' \
+            --data 'fmt=json' --data 'limit=100' > results/mb-pearly-drops.json
+          sleep 1
+          curl -fsSLG 'https://musicbrainz.org/ws/2/recording/' \
+            -H 'User-Agent: melody-research/1.0 (temporary analysis)' \
+            --data-urlencode 'query=artist:"NewDad"' \
+            --data 'fmt=json' --data 'limit=100' > results/mb-newdad.json
+          python - <<'PY'
+          import json, pathlib
+          out=[]
+          for artist,fn in [('Pearly Drops','results/itunes-pearly-drops.json'),('NewDad','results/itunes-newdad.json')]:
+              d=json.load(open(fn))
+              rows=[]
+              for r in d.get('results',[]):
+                  if r.get('artistName','').casefold()==artist.casefold():
+                      rows.append((r.get('trackName'),r.get('collectionName'),r.get('releaseDate'),r.get('previewUrl'),r.get('trackId')))
+              seen=set(); rows2=[]
+              for row in rows:
+                  if row[0] not in seen:
+                      seen.add(row[0]); rows2.append(row)
+              out.append(f'## {artist} iTunes ({len(rows2)} unique tracks)')
+              out.extend('\t'.join('' if x is None else str(x) for x in row) for row in rows2)
+          for artist,fn in [('Pearly Drops','results/mb-pearly-drops.json'),('NewDad','results/mb-newdad.json')]:
+              d=json.load(open(fn)); recs=d.get('recordings',[])
+              titles=[]
+              for r in recs:
+                  title=r.get('title')
+                  if title and title not in titles: titles.append(title)
+              out.append(f'\n## {artist} MusicBrainz ({len(titles)} unique recordings)')
+              out.extend(titles)
+          pathlib.Path('results/catalog-summary.txt').write_text('\n'.join(out),encoding='utf-8')
+          PY
+          cat results/catalog-summary.txt
+      - name: Upload catalog results
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-results-v2
+          path: results
+          retention-days: 1
