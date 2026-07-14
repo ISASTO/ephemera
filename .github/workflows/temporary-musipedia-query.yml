@@ -1,4 +1,4 @@
-name: Temporary Musipedia melody query
+name: Temporary candidate vocal analysis
 
 on:
   pull_request:
@@ -8,36 +8,31 @@ permissions:
   contents: read
 
 jobs:
-  query:
+  analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Query Musipedia contour search
+      - name: Download public Spotify previews
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p results
-          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'
-          BASE='https://www.musipedia.org/melodic_contour.html'
-          curl -A "$UA" -fLsS -c cookies.txt "$BASE" -o results/form.html
-          for item in \
-            'consensus:*RRUDRDUDRDRURDU' \
-            'short:*RRUDRDUDRDR' \
-            'variant1:*RRUDRDDUDDRURDU' \
-            'variant2:*RRUDRDUDRDRURD' \
-            'variant3:*RRUDRDUDRDRU'; do
-              name="${item%%:*}"
-              code="${item#*:}"
-              curl -A "$UA" -fLsS -b cookies.txt -c cookies.txt \
-                --data-urlencode "tx_mpsearch_pi1[pc]=$code" \
-                --data-urlencode 'tx_mpsearch_pi1[submit_button]=Search' \
-                "$BASE" -o "results/${name}.html"
-              echo "$name $code $(wc -c < results/${name}.html) bytes"
+          mkdir -p previews
+          curl -fL --retry 3 -o previews/my-name-is-dancing.mp3 'https://p.scdn.co/mp3-preview/fe92836772bda0021c5e9055b601cd9d1ed40f6a.mp3'
+          curl -fL --retry 3 -o previews/river.mp3 'https://p.scdn.co/mp3-preview/5a17a2eb3a8a455ef7e9c49dff4af199471d61b8.mp3'
+          curl -fL --retry 3 -o previews/my-heart-is-a-bloodhound.mp3 'https://p.scdn.co/mp3-preview/2ce835eccc3a7fef6395fc81284fc42e62b26bd5.mp3'
+          curl -fL --retry 3 -o previews/sublime.mp3 'https://p.scdn.co/mp3-preview/b949b765bb0e6a218eaa83332f71bce7559c06bc.mp3'
+      - name: Install Demucs
+        run: pip install --quiet numpy demucs
+      - name: Isolate vocals
+        run: |
+          python -m demucs --two-stems=vocals -o separated previews/*.mp3
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
           done
-          grep -RniE 'result|similar|title|composer|artist|melody|no match|nothing found' results | head -300 > results/grep-summary.txt || true
-          ls -lh results
-      - name: Upload query results
+      - name: Upload vocal stems
         uses: actions/upload-artifact@v4
         with:
-          name: musipedia-query-results
-          path: results
+          name: candidate-vocals-batch-2
+          path: vocal-stems/*.wav
           retention-days: 1
