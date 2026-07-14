@@ -1,4 +1,4 @@
-name: Temporary Musipedia contour search
+name: Temporary Musipedia browser contour search
 
 on:
   pull_request:
@@ -11,35 +11,42 @@ jobs:
   search:
     runs-on: ubuntu-latest
     steps:
-      - name: Query contour database
+      - name: Install browser tools
+        run: |
+          pip install --quiet selenium beautifulsoup4
+      - name: Search Musipedia interactively
         shell: bash
         run: |
           set -euo pipefail
           mkdir results
           python - <<'PY'
-          import pathlib, urllib.parse, urllib.request
-          base='https://www.musipedia.org/melodic_contour.html'
+          from selenium import webdriver
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.chrome.options import Options
+          import pathlib,time
+          opts=Options();opts.add_argument('--headless=new');opts.add_argument('--no-sandbox');opts.add_argument('--disable-dev-shm-usage');opts.add_argument('--window-size=1400,1200')
           contours=['*DUUDDUUDDUDUDD','*DUUDDUUDDUDD','*DUUDDUUDD','*DUUD','*DUUDDUUD']
-          for i,pc in enumerate(contours):
-              data=urllib.parse.urlencode({'tx_mpsearch_pi1[pc]':pc,'tx_mpsearch_pi1[submit_button]':'Search'}).encode()
-              for method in ('POST','GET'):
-                  try:
-                      if method=='POST':
-                          req=urllib.request.Request(base,data=data,headers={'User-Agent':'Mozilla/5.0','Content-Type':'application/x-www-form-urlencoded'})
-                      else:
-                          req=urllib.request.Request(base+'?'+data.decode(),headers={'User-Agent':'Mozilla/5.0'})
-                      with urllib.request.urlopen(req,timeout=45) as r: body=r.read()
-                      pathlib.Path(f'results/{i}-{method.lower()}.html').write_bytes(body)
-                      print(pc,method,'status',len(body),r.geturl())
-                  except Exception as e:
-                      pathlib.Path(f'results/{i}-{method.lower()}-error.txt').write_text(repr(e))
-                      print(pc,method,'ERROR',repr(e))
+          driver=webdriver.Chrome(options=opts)
+          try:
+            for i,pc in enumerate(contours):
+              driver.get('https://www.musipedia.org/melodic_contour.html');time.sleep(3)
+              pathlib.Path(f'results/{i}-landing.html').write_text(driver.page_source,encoding='utf-8')
+              try:
+                box=driver.find_element(By.NAME,'tx_mpsearch_pi1[pc]');box.clear();box.send_keys(pc)
+                driver.find_element(By.NAME,'tx_mpsearch_pi1[submit_button]').click();time.sleep(5)
+                pathlib.Path(f'results/{i}-results.html').write_text(driver.page_source,encoding='utf-8')
+                driver.save_screenshot(f'results/{i}-results.png')
+                print(pc,driver.title,driver.current_url,len(driver.page_source))
+              except Exception as e:
+                pathlib.Path(f'results/{i}-error.txt').write_text(repr(e))
+                print('ERROR',pc,repr(e))
+          finally: driver.quit()
           PY
-          grep -RniE 'result|title|artist|match|song' results/*.html | head -300 > results/extract.txt || true
+          grep -RniE 'result|title|artist|match|song|composer' results/*-results.html | head -500 > results/extract.txt || true
           cat results/extract.txt
       - name: Upload contour results
         uses: actions/upload-artifact@v4
         with:
-          name: musipedia-contour-results
+          name: musipedia-browser-results
           path: results
           retention-days: 1
