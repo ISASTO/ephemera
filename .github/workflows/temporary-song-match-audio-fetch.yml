@@ -1,0 +1,31 @@
+name: Temporary song-match audio fetch
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-previews:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download public Spotify previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir previews
+          curl -fL --retry 3 -o previews/never-goes-away.mp3 'https://p.scdn.co/mp3-preview/57687e78194a58c6ab3718f2c0845ef790293249.mp3'
+          curl -fL --retry 3 -o previews/snake-the-drain.mp3 'https://p.scdn.co/mp3-preview/77074768b408239fde2907abace36f857191c2b1.mp3'
+          curl -fL --retry 3 -o previews/this-time-its-different.mp3 'https://p.scdn.co/mp3-preview/059976df2bb41e2bf4e173ff24790b93046a3481.mp3'
+          curl -fL --retry 3 -o previews/deep.mp3 'https://p.scdn.co/mp3-preview/4dd1b08ff5552f4a5f706bfb39f71f2cc827eae0.mp3'
+          curl -fL --retry 3 -o previews/head.mp3 'https://p.scdn.co/mp3-preview/e10e1e53b8083ae3f2345c6a8b2092c1f6a1d4d1.mp3'
+          curl -fL --retry 3 -o previews/swim.mp3 'https://p.scdn.co/mp3-preview/a95bf3f30d507b9f8212e3de65cab59ef7b25c2b.mp3'
+          ls -lh previews
+      - name: Upload previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotify-preview-candidates
+          path: previews/*.mp3
+          retention-days: 1
