@@ -22,10 +22,26 @@ jobs:
           curl -fL --retry 3 -o previews/deep.mp3 'https://p.scdn.co/mp3-preview/4dd1b08ff5552f4a5f706bfb39f71f2cc827eae0.mp3'
           curl -fL --retry 3 -o previews/head.mp3 'https://p.scdn.co/mp3-preview/e10e1e53b8083ae3f2345c6a8b2092c1f6a1d4d1.mp3'
           curl -fL --retry 3 -o previews/swim.mp3 'https://p.scdn.co/mp3-preview/a95bf3f30d507b9f8212e3de65cab59ef7b25c2b.mp3'
-          ls -lh previews
+      - name: Install Demucs
+        run: pip install --quiet demucs
+      - name: Isolate vocals
+        run: |
+          python -m demucs --two-stems=vocals -o separated previews/*.mp3
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+          ls -lh vocal-stems
       - name: Upload previews
         uses: actions/upload-artifact@v4
         with:
           name: spotify-preview-candidates
           path: previews/*.mp3
+          retention-days: 1
+      - name: Upload vocal stems
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotify-preview-vocals
+          path: vocal-stems/*.wav
           retention-days: 1
