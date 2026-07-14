@@ -1,0 +1,74 @@
+name: Temporary obscure recent-history corpus
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy librosa
+      - name: Fetch catalogs and rank full and partial motifs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previews shortlist results
+          python - <<'PY'
+          import json,pathlib,re,shutil,subprocess,time,urllib.parse,urllib.request
+          import numpy as np,librosa
+          artists=['Suzy Sheer','daine','Brothel in Belize','Somewhere Special','anna luna','Snow Strippers','Oklou','Eartheater','Frost Children','Caroline Loveglow','Holly Waxwing','8485','Cowgirl Clue','Mechatok','Ninajirachi','Doss']
+          q=np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88.0]);qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
+          variants={'full':(q,qt),'two_cycles':(q[:8],qt[:8]),'one_cycle':(q[:4],qt[:4]),'cycle_plus_third':(q[:11],qt[:11]),'closing_tag':(q[11:],qt[11:]-qt[11]),'second_through_tag':(q[4:],qt[4:]-qt[4])}
+          sr=8000;hop=256;fps=sr/hop
+          def fetch(url):
+            req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req,timeout=45) as r:return r.read()
+          def score(C,qq,qtt):
+            pcs=(qq%12).astype(int);best=None
+            for scale in np.arange(.76,1.281,.04):
+              rel=np.rint(qtt*scale*fps).astype(int);starts=np.arange(0,max(0,C.shape[1]-rel[-1]-1),2)
+              if not len(starts):continue
+              cols=starts[:,None]+rel
+              for tr in range(12):
+                vals=C[((pcs+tr)%12)[None,:],cols];mean=vals.mean(1);floor=np.percentile(vals,20,axis=1);s=1-(.8*mean+.2*floor);k=int(np.argmin(s))
+                rec={'score':float(s[k]),'start':float(starts[k]/fps),'scale':float(scale),'transpose':int(tr)}
+                if best is None or rec['score']<best['score']:best=rec
+            return best or {'score':999}
+          rows=[]
+          for artist in artists:
+            params=urllib.parse.urlencode({'term':artist,'entity':'song','limit':200,'country':'US'});data=json.loads(fetch('https://itunes.apple.com/search?'+params));seen=set();n=0
+            for x in data.get('results',[]):
+              if x.get('artistName','').casefold()!=artist.casefold() or not x.get('previewUrl'):continue
+              title=x.get('trackName') or 'untitled';key=title.casefold()
+              if key in seen:continue
+              seen.add(key);aslug=re.sub(r'[^a-z0-9]+','-',artist.casefold()).strip('-');tslug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80];fn=f'{aslug}__{x.get("trackId")}__{tslug}.m4a';p=pathlib.Path('previews')/fn
+              try:
+                p.write_bytes(fetch(x['previewUrl']));proc=subprocess.run(['ffmpeg','-v','error','-i',str(p),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True,check=True);y=np.frombuffer(proc.stdout,dtype='<f4');C=librosa.feature.chroma_stft(y=y,sr=sr,n_fft=1024,hop_length=hop,n_chroma=12);C=C/(C.sum(0,keepdims=True)+1e-8)
+                matches={k:score(C,*v) for k,v in variants.items()};row={'artist':artist,'title':title,'filename':fn,'track_id':x.get('trackId'),'preview_url':x['previewUrl'],'release_date':x.get('releaseDate'),'matches':matches,'full_score':matches['full']['score']};row['best_partial']=min((k for k in matches if k!='full'),key=lambda k:matches[k]['score']);row['partial_score']=matches[row['best_partial']]['score'];rows.append(row);n+=1
+              except Exception as e:print('FAIL',artist,title,repr(e))
+              time.sleep(.01)
+            print(artist,n)
+          rows.sort(key=lambda r:min(r['full_score'],r['partial_score']));pathlib.Path('results/rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False));pathlib.Path('results/top.tsv').write_text('\n'.join(f"{r['full_score']:.5f}\t{r['partial_score']:.5f}\t{r['best_partial']}\t{r['artist']}\t{r['title']}\t{r['filename']}" for r in rows))
+          chosen={r['filename'] for r in rows[:80]}
+          for a in artists:chosen.update(r['filename'] for r in [x for x in rows if x['artist']==a][:5])
+          for fn in chosen:
+            p=pathlib.Path('previews')/fn
+            if p.exists():shutil.copy2(p,pathlib.Path('shortlist')/fn)
+          print(pathlib.Path('results/top.tsv').read_text()[:12000])
+          PY
+      - name: Upload obscure-history rankings
+        uses: actions/upload-artifact@v4
+        with:
+          name: obscure-history-rankings
+          path: |
+            results
+            shortlist
+          retention-days: 1
