@@ -1,0 +1,38 @@
+name: Temporary exact recent previews
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download exact public Spotify previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir previews
+          curl -fL --retry 3 -o previews/suzy-sheer__tell-me.mp3 'https://p.scdn.co/mp3-preview/23d7c7fac42880a01c633bc21bf9dcddcdcc14a9.mp3'
+          curl -fL --retry 3 -o previews/suzy-sheer__magic.mp3 'https://p.scdn.co/mp3-preview/37fbb7631ab45e96a1338c14389a5ffcf725f6c9.mp3'
+          curl -fL --retry 3 -o previews/suzy-sheer__days.mp3 'https://p.scdn.co/mp3-preview/111595a03e874ae2eb6e658c4a7af0a313fedb0a.mp3'
+          curl -fL --retry 3 -o previews/suzy-sheer__blissed.mp3 'https://p.scdn.co/mp3-preview/631725522d651faec462e0d5afa41b5f6f182687.mp3'
+          curl -fL --retry 3 -o previews/suzy-sheer__soft-release.mp3 'https://p.scdn.co/mp3-preview/6a7a321dfa7b708e830c70bf0179b0c6721f4bac.mp3'
+          curl -fL --retry 3 -o previews/suzy-sheer__other-turn.mp3 'https://p.scdn.co/mp3-preview/d21aab9bd69aa559c3fd76dc825adc75d9ca1816.mp3'
+          curl -fL --retry 3 -o previews/suzy-sheer__no-surprise.mp3 'https://p.scdn.co/mp3-preview/b93e541c03a9275697d720bf2b08ed43037aa9d7.mp3'
+          curl -fL --retry 3 -o previews/brothel-in-belize__virgin-suicides.mp3 'https://p.scdn.co/mp3-preview/3f0169750f027ad6ff72ddc9e794790797c0991a.mp3'
+          curl -fL --retry 3 -o previews/brothel-in-belize__electronica.mp3 'https://p.scdn.co/mp3-preview/ae2fea5152eb4bf6c574ca3ab6f5240648bbb15f.mp3'
+          curl -fL --retry 3 -o previews/somewhere-special__feel-the-light.mp3 'https://p.scdn.co/mp3-preview/ba8e970c9e41ffedea0ee68a5160d15c91e6ccdc.mp3'
+          curl -fL --retry 3 -o previews/somewhere-special__blizzard-warning.mp3 'https://p.scdn.co/mp3-preview/9d2704c4a07c8ea396e6b8f0361c7f6d423180c9.mp3'
+          curl -fL --retry 3 -o previews/anna-luna__stuck.mp3 'https://p.scdn.co/mp3-preview/6f8bd9050b5fd32f2835c58eaa8b0d4cf6383b6f.mp3'
+          curl -fL --retry 3 -o previews/king-princess__cry-cry-cry.mp3 'https://p.scdn.co/mp3-preview/daae519b2d5285cc28d8a7d95e8f70337cad9f94.mp3'
+          ls -lh previews
+      - name: Upload exact preview batch
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-recent-previews
+          path: previews/*.mp3
+          retention-days: 1
