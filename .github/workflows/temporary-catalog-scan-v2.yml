@@ -1,4 +1,4 @@
-name: Temporary full catalog preview fetch
+name: Temporary top catalog vocal separation
 
 on:
   pull_request:
@@ -8,52 +8,45 @@ permissions:
   contents: read
 
 jobs:
-  fetch:
+  separate:
     runs-on: ubuntu-latest
     steps:
-      - name: Download exact-artist Apple previews
+      - name: Download top motif candidates
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p catalog previews
-          curl -fsSLG 'https://itunes.apple.com/search' --data-urlencode 'term=Pearly Drops' --data 'entity=song' --data 'limit=200' > catalog/pearly-drops.json
-          curl -fsSLG 'https://itunes.apple.com/search' --data-urlencode 'term=NewDad' --data 'entity=song' --data 'limit=200' > catalog/newdad.json
-          python - <<'PY'
-          import json, pathlib, re, urllib.request, time
-          metadata=[]
-          for artist,fn in [('Pearly Drops','catalog/pearly-drops.json'),('NewDad','catalog/newdad.json')]:
-              data=json.load(open(fn))
-              seen=set()
-              for r in data.get('results',[]):
-                  if r.get('artistName','').casefold()!=artist.casefold(): continue
-                  title=r.get('trackName') or 'untitled'
-                  if title in seen: continue
-                  seen.add(title)
-                  url=r.get('previewUrl')
-                  if not url: continue
-                  slug=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')[:80]
-                  track_id=str(r.get('trackId','unknown'))
-                  ext='.m4a'
-                  filename=f"{artist.casefold().replace(' ','-')}__{track_id}__{slug}{ext}"
-                  path=pathlib.Path('previews')/filename
-                  try:
-                      req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
-                      with urllib.request.urlopen(req,timeout=30) as src, open(path,'wb') as dst:
-                          dst.write(src.read())
-                      metadata.append({'artist':artist,'title':title,'track_id':track_id,'filename':filename,'preview_url':url,'collection':r.get('collectionName'),'release_date':r.get('releaseDate')})
-                      print(artist, title, path.stat().st_size)
-                  except Exception as e:
-                      print('FAILED',artist,title,repr(e))
-                  time.sleep(0.05)
-          pathlib.Path('metadata.json').write_text(json.dumps(metadata,indent=2,ensure_ascii=False),encoding='utf-8')
-          print('downloaded',len(metadata),'previews')
-          PY
-          du -sh previews
-      - name: Upload complete preview batch
+          mkdir previews
+          curl -fL --retry 3 -o previews/newdad__1705428436__white-ribbons.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/4b/8a/30/4b8a307c-394e-7d7c-1398-dc88886ac81d/mzaf_5754559510586534218.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1689290117__break-in.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/9b/b5/d7/9bb5d7e4-546b-4aaa-7d31-ae644ca5b6ca/mzaf_15655612874472165409.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1887504253__kick-the-curb.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/92/eb/8c/92eb8c0e-969c-a558-c429-b3caaf662f46/mzaf_5538113400045267762.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/pearly-drops__1535984257__oppressive-face.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/cd/4c/92/cd4c92c8-2044-8bd1-6c9b-e1e2a95ba2d2/mzaf_10222718235231000108.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1600535179__banshee.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/3e/52/25/3e5225ff-b81d-5179-4f03-732221e5efb3/mzaf_5374229418479258992.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/pearly-drops__1535984261__nightmare-screen.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/28/f1/67/28f1675c-940e-2cb5-d1d0-c356e14d3fad/mzaf_11943693253825228406.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/pearly-drops__1535984260__final-form.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/3e/27/90/3e2790b8-ff65-97f8-2bbf-55283c23efe8/mzaf_17356766813822860427.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/pearly-drops__1667372687__get-well.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview123/v4/b2/d1/4e/b2d14e8a-741c-4680-8f85-23ff7afb4490/mzaf_9525958573386882591.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1747268499__just-like-heaven-live-at-bbc-maida-vale.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/6c/90/5e/6c905ebd-cb3f-a244-d111-173e29650308/mzaf_6927454271447856719.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/pearly-drops__1476836640__heatwave.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview123/v4/5e/37/5e/5e375e34-063b-541c-bad9-8a95bdd86b81/mzaf_7341730255898177653.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/pearly-drops__1667372692__my-ashes-blow-away.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview123/v4/98/d9/72/98d9720f-b40e-7749-d808-db6564e4647d/mzaf_16119520479986796002.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1705428443__madra.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/4a/49/02/4a490293-d2c9-8564-c2f1-c6b25f112dc2/mzaf_13714235161017055666.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1581102457__how.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/f9/6c/a9/f96ca90d-cfc2-f618-618f-8adc05157938/mzaf_6810347805845543129.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1822978132__puzzle.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/f9/3a/29/f93a2998-c762-d214-e708-bd1ee71895ad/mzaf_2817574174491499569.plus.aac.p.m4a'
+          curl -fL --retry 3 -o previews/newdad__1822977945__heavyweight.m4a 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/65/55/ec/6555ec37-11c1-ac97-c0fe-34510524a95c/mzaf_13211031936148048823.plus.aac.p.m4a'
+      - name: Install Demucs
+        run: pip install --quiet numpy demucs
+      - name: Isolate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m demucs --two-stems=vocals -o separated previews/*
+          mkdir vocal-stems
+          find separated -type f -name vocals.wav -print0 | while IFS= read -r -d '' file; do
+            track="$(basename "$(dirname "$file")")"
+            cp "$file" "vocal-stems/${track}-vocals.wav"
+          done
+          ls -lh vocal-stems
+      - name: Upload vocal stems
         uses: actions/upload-artifact@v4
         with:
-          name: full-reference-catalog-previews
-          path: |
-            previews
-            metadata.json
+          name: top-reference-catalog-vocals
+          path: vocal-stems/*.wav
           retention-days: 1
