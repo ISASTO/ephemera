@@ -16,7 +16,7 @@ STEP 1 — PREPARE PAGES
 • Export each page as an image
 • Use JPG
 • Keep images web-safe (~2000–3000px long edge)
-• Use imageresizer.com to make a thumbnail of first page
+• Use imageresizer.com to make a thumbnail of first page, 500px wide
 
 Name thumbnails thumb.jpg
 
