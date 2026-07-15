@@ -1,0 +1,90 @@
+name: Temporary AHA and history candidate check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install audio tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy scipy librosa demucs
+      - name: Download exact previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir previews
+          curl -fL --retry 3 -o previews/pastel-haze__janitors-keys.mp3 'https://p.scdn.co/mp3-preview/71f27090e5fa51e640874b38bf93eea044f46204.mp3'
+          curl -fL --retry 3 -o previews/sarah-kinsley__glint.mp3 'https://p.scdn.co/mp3-preview/296aa155cd53da7a922aebfb147a75efd4082c94.mp3'
+          curl -fL --retry 3 -o previews/sarah-kinsley__realms.mp3 'https://p.scdn.co/mp3-preview/2931df16b1b92e6cd3e88101db7aa5950daad08e.mp3'
+          curl -fL --retry 3 -o previews/sarah-kinsley__last-time-we-never-meet-again.mp3 'https://p.scdn.co/mp3-preview/4f40e35229d7ca74d26c7a7706bfb482f0291947.mp3'
+      - name: Separate and rank vocal and accompaniment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for f in previews/*.mp3; do b="$(basename "$f" .mp3)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
+          python - <<'PY'
+          import json, pathlib, numpy as np, librosa
+          qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
+          q=np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88.0])
+          w=np.array([1.4,1.4,1.2,.55,1.4,1.4,1.2,.55,1.4,1.4,.75,.55,.45,.45,.45])
+          groups=[(0,4),(4,8),(8,11),(11,15)]
+          def track(path):
+            y,sr=librosa.load(path,sr=12000,mono=True)
+            f0,v,_=librosa.pyin(y,fmin=librosa.note_to_hz('C2'),fmax=librosa.note_to_hz('C7'),sr=sr,frame_length=2048,hop_length=180,fill_na=np.nan)
+            return librosa.times_like(f0,sr=sr,hop_length=180),librosa.hz_to_midi(f0)
+          def interp(t,m,x):
+            ok=np.isfinite(m)
+            if ok.sum()<5:return np.full_like(x,np.nan,dtype=float)
+            return np.interp(x,t[ok],m[ok],left=np.nan,right=np.nan)
+          def compare(t,m):
+            best=None
+            for scale in np.arange(.70,1.401,.025):
+              span=qt[-1]*scale
+              for start in np.arange(0,max(0,t[-1]-span),.05):
+                vals=interp(t,m,start+qt*scale); cover=np.isfinite(vals).mean()
+                if cover<.72:continue
+                tr=np.nanmedian(vals-q); a=vals-tr; err=np.abs(a-q)
+                mae=np.nansum(err*w)/np.nansum(w*np.isfinite(err))
+                dv=np.diff(vals); dq=np.diff(q); ok=np.isfinite(dv)
+                iv=np.nansum(np.abs(dv-dq)*ok)/max(ok.sum(),1)
+                dmis=np.nansum((np.sign(dv)!=np.sign(dq))*ok)/max(ok.sum(),1)
+                ge=[]
+                for lo,hi in groups:
+                  e=err[lo:hi]; ww=w[lo:hi]; z=np.isfinite(e)
+                  ge.append(float(np.sum(e[z]*ww[z])/max(np.sum(ww[z]),1e-9)) if z.any() else 9)
+                score=.9*mae+.45*iv+1.7*dmis+.3*max(ge)+1.5*(1-cover)
+                rec={'score':float(score),'start':float(start),'scale':float(scale),'coverage':float(cover),'mae':float(mae),'interval_error':float(iv),'direction_mismatch':float(dmis),'group_errors':ge,'aligned':[None if not np.isfinite(x) else float(x) for x in a]}
+                if best is None or score<best['score']:best=rec
+            return best or {'score':999}
+          rows=[]
+          for v in pathlib.Path('separated/htdemucs').glob('*/vocals.wav'):
+            stem=v.parent.name; nv=v.parent/'no_vocals.wav'
+            tv,mv=track(v); tn,mn=track(nv)
+            vr=compare(tv,mv); nr=compare(tn,mn)
+            rows.append({'track':stem,'vocal':vr,'accompaniment':nr,'combined':min(vr['score'],nr['score']+.65),'source':'vocal' if vr['score']<=nr['score']+.65 else 'accompaniment'})
+          rows.sort(key=lambda x:x['combined'])
+          pathlib.Path('results.json').write_text(json.dumps(rows,indent=2))
+          pathlib.Path('results.tsv').write_text('\n'.join(f"{r['combined']:.5f}\t{r['source']}\t{r['track']}\t{r['vocal']['score']:.5f}\t{r['accompaniment']['score']:.5f}" for r in rows))
+          print(pathlib.Path('results.tsv').read_text())
+          PY
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: aha-history-candidate-check
+          path: |
+            results.json
+            results.tsv
+            previews
+            separated/htdemucs/*/vocals.wav
+            separated/htdemucs/*/no_vocals.wav
+          retention-days: 1
