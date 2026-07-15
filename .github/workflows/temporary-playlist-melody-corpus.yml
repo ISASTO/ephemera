@@ -1,0 +1,291 @@
+name: Temporary playlist melody corpus
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Install analysis dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa soundfile
+
+      - name: Fetch playlist tracks, resolve previews, and screen the melody
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results top-previews
+          cat > /tmp/screen.py <<'PY'
+          import concurrent.futures as cf
+          import json, math, os, pathlib, re, subprocess, time, unicodedata
+          from urllib.parse import quote
+
+          import librosa
+          import numpy as np
+          import requests
+
+          PLAYLISTS = [
+              '0KYyZmo05ynpxxWOhiaNUI', # absurdly niche indie music
+              '7CUjn0FBPI0vy1wSM3OUmO', # niche indie rock with a mix
+              '0oD5aLzUQiIomu805F3xDH', # dreampop & shoegaze
+              '1sDd3rGECTAiKVP8HrSuDR', # japanese shoegaze / alternative
+              '4GnbtrjwT5KHtTS8fqlUju', # relaxing shoegaze
+              '4O9ipepBGe2yPtluBN9peZ', # sad shoegaze
+              '1h5957qXQTkqlUDfAQp2Hp', # generated dream pop favorites, if public
+          ]
+
+          # Clean recording, expressed directly from its measured tap grid and pYIN curve.
+          # Beats are relative to the first tap; MIDI values are only used modulo 12.
+          QUERY = np.array([
+              [0.20,83.2],[0.34,84.1],[0.48,84.8],[0.70,85.5],
+              [1.25,85.0],[1.75,85.1],[2.20,85.0],[2.68,89.2],[2.84,90.0],[3.15,93.0],
+              [3.58,85.1],[4.30,85.1],[5.18,85.0],[5.35,83.8],[5.52,83.1],[6.30,83.3],
+              [6.43,89.5],[6.57,90.1],[6.78,91.9],[7.10,92.7],
+              [7.58,85.6],[8.30,85.0],[9.18,84.5],[9.35,83.3],[10.43,83.3],
+              [10.57,90.3],[10.82,90.8],[11.18,92.8],
+              [11.46,84.9],[12.30,85.1],[13.18,84.8],[13.35,83.7],[14.30,83.4],
+              [14.45,90.3],[14.68,91.4],[14.92,92.7],[15.12,91.0],[15.35,90.5],[15.78,90.2],
+              [16.45,90.9],[16.72,91.3],[16.88,92.5],[17.18,90.7],[17.48,90.3],[17.72,87.9]
+          ], dtype=float)
+          QUERY[:,0] *= 60.0/103.54
+          QTIMES=QUERY[:,0]
+          QPCS=np.mod(np.rint(QUERY[:,1]).astype(int),12)
+          GROUPS=[(0,10),(10,20),(20,28),(28,40),(40,46)]
+          VARIANTS={
+              'full':np.arange(len(QTIMES)),
+              'first_three_rises':np.arange(0,28),
+              'middle_three_rises':np.arange(10,40),
+              'last_two_plus_tag':np.arange(28,46),
+              'rise_cycle_1':np.arange(4,10),
+              'rise_cycle_2':np.arange(14,20),
+              'rise_cycle_3':np.arange(23,28),
+              'closing_tag':np.arange(33,46),
+          }
+
+          def norm(s):
+              s=unicodedata.normalize('NFKD',s or '').encode('ascii','ignore').decode().casefold()
+              return re.sub(r'[^a-z0-9]+',' ',s).strip()
+
+          sess=requests.Session()
+          sess.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'})
+
+          def spotify_token():
+              sess.get('https://open.spotify.com/',timeout=30)
+              r=sess.get('https://open.spotify.com/get_access_token',params={'reason':'transport','productType':'web_player'},headers={'Referer':'https://open.spotify.com/'},timeout=30)
+              r.raise_for_status()
+              d=r.json()
+              return d.get('accessToken') or d.get('access_token')
+
+          def fetch_spotify_tracks(pid, token):
+              out=[]; url=f'https://api.spotify.com/v1/playlists/{pid}/tracks?limit=100&market=US'
+              headers={'Authorization':f'Bearer {token}'}
+              while url:
+                  r=sess.get(url,headers=headers,timeout=45)
+                  if r.status_code>=400:
+                      print('PLAYLIST FAILED',pid,r.status_code,r.text[:200]); break
+                  d=r.json()
+                  for it in d.get('items',[]):
+                      x=it.get('track') or {}
+                      if x.get('type')!='track': continue
+                      artists=', '.join(a.get('name','') for a in x.get('artists',[]))
+                      out.append({'spotify_id':x.get('id'),'title':x.get('name'),'artist':artists,
+                                  'primary_artist':(x.get('artists') or [{}])[0].get('name',''),
+                                  'preview_url':x.get('preview_url'),'release_date':(x.get('album') or {}).get('release_date'),
+                                  'playlist_id':pid})
+                  url=d.get('next')
+              print('PLAYLIST',pid,len(out))
+              return out
+
+          def fetch_embed_tracks(pid):
+              # Fallback for when Spotify's anonymous Web API changes.
+              urls=[f'https://open.spotify.com/embed/playlist/{pid}',f'https://open.spotify.com/playlist/{pid}']
+              for u in urls:
+                  try:
+                      text=sess.get(u,timeout=45).text
+                      # Spotify pages contain JSON-LD item lists on some deployments.
+                      for m in re.finditer(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',text,re.S):
+                          try:
+                              d=json.loads(m.group(1))
+                          except Exception: continue
+                          items=d.get('track') or d.get('itemListElement') or []
+                          out=[]
+                          for it in items:
+                              x=it.get('item',it) if isinstance(it,dict) else {}
+                              title=x.get('name'); by=x.get('byArtist') or x.get('creator') or {}
+                              artist=by.get('name','') if isinstance(by,dict) else ''
+                              if title: out.append({'spotify_id':None,'title':title,'artist':artist,'primary_artist':artist,
+                                                   'preview_url':None,'release_date':None,'playlist_id':pid})
+                          if out: return out
+                  except Exception as e: print('EMBED FAIL',pid,repr(e))
+              return []
+
+          tracks=[]
+          try:
+              token=spotify_token(); print('GOT SPOTIFY TOKEN',bool(token))
+          except Exception as e:
+              print('TOKEN FAILED',repr(e)); token=None
+          for pid in PLAYLISTS:
+              part=fetch_spotify_tracks(pid,token) if token else []
+              if not part: part=fetch_embed_tracks(pid)
+              tracks.extend(part)
+
+          # Deduplicate versions conservatively by normalized primary artist + title.
+          dedup={}
+          for x in tracks:
+              key=(norm(x['primary_artist']),norm(re.sub(r'\s*[-–—]\s*(remaster(ed)?|live|acoustic|demo|edit|version).*$', '', x['title'] or '', flags=re.I)))
+              if not all(key): continue
+              dedup.setdefault(key,x)
+          tracks=list(dedup.values())
+          print('UNIQUE TRACKS',len(tracks))
+          pathlib.Path('results/spotify_tracks.json').write_text(json.dumps(tracks,indent=2,ensure_ascii=False),encoding='utf-8')
+
+          def exactish(a,b):
+              a,b=norm(a),norm(b)
+              return a==b or (len(a)>5 and (a in b or b in a))
+
+          def resolve_preview(x):
+              if x.get('preview_url'):
+                  return {**x,'source':'spotify','resolved_artist':x['primary_artist'],'resolved_title':x['title'],'url':x['preview_url']}
+              artist=x['primary_artist']; title=x['title']
+              # Deezer first: broad catalog and simple MP3 previews.
+              try:
+                  q=f'artist:"{artist}" track:"{title}"'
+                  d=requests.get('https://api.deezer.com/search',params={'q':q,'limit':15},timeout=25).json()
+                  cand=[]
+                  for z in d.get('data',[]):
+                      za=(z.get('artist') or {}).get('name',''); zt=z.get('title_short') or z.get('title','')
+                      if z.get('preview') and exactish(artist,za) and exactish(title,zt): cand.append(z)
+                  if cand:
+                      z=cand[0]; return {**x,'source':'deezer','resolved_artist':(z.get('artist') or {}).get('name'),
+                                         'resolved_title':z.get('title'),'url':z.get('preview')}
+              except Exception as e: pass
+              # iTunes fallback.
+              try:
+                  d=requests.get('https://itunes.apple.com/search',params={'term':f'{artist} {title}','entity':'song','limit':50,'country':'US'},timeout=25).json()
+                  cand=[]
+                  for z in d.get('results',[]):
+                      if z.get('previewUrl') and exactish(artist,z.get('artistName','')) and exactish(title,z.get('trackName','')): cand.append(z)
+                  if cand:
+                      z=cand[0]; return {**x,'source':'itunes','resolved_artist':z.get('artistName'),
+                                         'resolved_title':z.get('trackName'),'url':z.get('previewUrl')}
+              except Exception as e: pass
+              return None
+
+          resolved=[]
+          with cf.ThreadPoolExecutor(max_workers=16) as ex:
+              futs=[ex.submit(resolve_preview,x) for x in tracks]
+              for i,f in enumerate(cf.as_completed(futs),1):
+                  try:
+                      z=f.result()
+                      if z: resolved.append(z)
+                  except Exception: pass
+                  if i%100==0: print('RESOLVED PROGRESS',i,len(resolved))
+          print('PREVIEWS RESOLVED',len(resolved))
+          pathlib.Path('results/resolved.json').write_text(json.dumps(resolved,indent=2,ensure_ascii=False),encoding='utf-8')
+
+          SR=8000; HOP=256; FPS=SR/HOP
+          def audio_bytes_to_wave(data):
+              p=subprocess.run(['ffmpeg','-v','error','-i','pipe:0','-f','f32le','-ac','1','-ar',str(SR),'pipe:1'],input=data,capture_output=True)
+              if p.returncode: raise RuntimeError(p.stderr.decode(errors='ignore')[:300])
+              return np.frombuffer(p.stdout,dtype='<f4')
+
+          def make_chroma(y):
+              # Harmonic emphasis and a normalized 12-bin representation.
+              yh=librosa.effects.harmonic(y,margin=2.0)
+              C=librosa.feature.chroma_stft(y=yh,sr=SR,n_fft=2048,hop_length=HOP,n_chroma=12)
+              C=np.maximum(C,0)
+              C/=C.sum(axis=0,keepdims=True)+1e-8
+              return C
+
+          def score_variant(C, idx, scale, tr):
+              qt=QTIMES[idx]*scale
+              rel=np.rint(qt*FPS).astype(int)
+              span=rel[-1]+1
+              if C.shape[1]<=span+1: return None
+              starts=np.arange(0,C.shape[1]-span,2)
+              cols=starts[:,None]+rel[None,:]
+              pcs=(QPCS[idx]+tr)%12
+              vals=C[pcs[None,:],cols]
+              # Contrast against the strongest non-target pitch class at each event.
+              allvals=np.take_along_axis(C.T[None,:,:],np.zeros((1,1,1),int),axis=2) if False else None
+              target=vals
+              # Using mean chroma as baseline makes chord-only matches less dominant.
+              baseline=(1.0-target)/11.0
+              contrast=target-baseline
+              mean=contrast.mean(axis=1)
+              p20=np.percentile(contrast,20,axis=1)
+              strong=(target>0.13).mean(axis=1)
+              raw=mean+0.30*p20+0.10*strong
+              k=int(np.argmax(raw))
+              return {'value':float(raw[k]),'start':float(starts[k]/FPS),'scale':float(scale),'transpose':int(tr),
+                      'mean_contrast':float(mean[k]),'p20':float(p20[k]),'strong_fraction':float(strong[k])}
+
+          def score_track(z):
+              try:
+                  r=requests.get(z['url'],timeout=35,headers={'User-Agent':'Mozilla/5.0'}); r.raise_for_status()
+                  data=r.content
+                  y=audio_bytes_to_wave(data)
+                  if len(y)<SR*12: return None
+                  C=make_chroma(y)
+                  best_by_variant={}
+                  scales=np.arange(.72,1.321,.04)
+                  for name,idx in VARIANTS.items():
+                      best=None
+                      for scale in scales:
+                          for tr in range(12):
+                              rec=score_variant(C,idx,scale,tr)
+                              if rec and (best is None or rec['value']>best['value']): best=rec
+                      best_by_variant[name]=best
+                  # Composite favors the full phrase, but preserves strong partials because memory can be wrong.
+                  full=best_by_variant['full']['value'] if best_by_variant['full'] else -1
+                  long1=best_by_variant['first_three_rises']['value'] if best_by_variant['first_three_rises'] else -1
+                  long2=best_by_variant['middle_three_rises']['value'] if best_by_variant['middle_three_rises'] else -1
+                  parts=sorted([best_by_variant[k]['value'] for k in ['rise_cycle_1','rise_cycle_2','rise_cycle_3','closing_tag'] if best_by_variant[k]],reverse=True)
+                  partial=(parts[0]+parts[1])/2 if len(parts)>=2 else (parts[0] if parts else -1)
+                  composite=.52*full+.20*max(long1,long2)+.28*partial
+                  return {k:v for k,v in z.items() if k!='url'} | {'preview_url':z['url'],'composite':float(composite),'variants':best_by_variant,'audio_bytes':data}
+              except Exception as e:
+                  return None
+
+          scored=[]
+          # Network + analysis in a moderate thread pool; numpy/ffmpeg release the GIL.
+          with cf.ThreadPoolExecutor(max_workers=6) as ex:
+              futs=[ex.submit(score_track,z) for z in resolved]
+              for i,f in enumerate(cf.as_completed(futs),1):
+                  try:
+                      r=f.result()
+                      if r: scored.append(r)
+                  except Exception: pass
+                  if i%50==0: print('SCORED',i,len(scored))
+          scored.sort(key=lambda r:r['composite'],reverse=True)
+          for rank,r in enumerate(scored[:150],1):
+              ext='.mp3' if r.get('source') in ('deezer','spotify') else '.m4a'
+              fn=f"{rank:03d}__{re.sub(r'[^a-z0-9]+','-',norm(r.get('primary_artist')))[:50]}__{re.sub(r'[^a-z0-9]+','-',norm(r.get('title')))[:70]}{ext}"
+              pathlib.Path('top-previews',fn).write_bytes(r.pop('audio_bytes'))
+              r['local_file']=fn
+          for r in scored[150:]: r.pop('audio_bytes',None)
+          pathlib.Path('results/rankings.json').write_text(json.dumps(scored,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('results/top.tsv').write_text('\n'.join(
+              f"{i+1}\t{r['composite']:.6f}\t{r.get('primary_artist')}\t{r.get('title')}\t{r.get('source')}\t{r.get('variants',{}).get('full',{}).get('start')}\t{r.get('local_file','')}"
+              for i,r in enumerate(scored[:300])),encoding='utf-8')
+          print('TOP 100')
+          print(pathlib.Path('results/top.tsv').read_text(encoding='utf-8')[:20000])
+          PY
+          python /tmp/screen.py
+
+      - name: Upload playlist corpus screening
+        uses: actions/upload-artifact@v4
+        with:
+          name: playlist-melody-screen
+          path: |
+            results
+            top-previews
+          retention-days: 1
