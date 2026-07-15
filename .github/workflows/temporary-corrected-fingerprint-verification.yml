@@ -1,0 +1,149 @@
+name: Temporary corrected-fingerprint verification
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Install audio tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa demucs
+
+      - name: Resolve and download corrected shortlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previews metadata
+          python - <<'PY'
+          import json,pathlib,re,requests
+          targets=[
+            ('FKA twigs','minds of men'),
+            ('CHVRCHES','Really Gone'),
+            ('Momma','Rip Off'),
+            ('Bat For Lashes','Deep Sea Diver'),
+            ('Caroline Polachek','Parachute'),
+            ('London Grammar','Shyer'),
+            ('Weyes Blood','Open Heart'),
+            ('Soccer Mommy','Gray Light (Demo)'),
+            ('Beach House','Used to Be'),
+            ('Alvvays','After the Earthquake'),
+            ('Crumb','Vinta'),
+            ('Crumb','Locket'),
+            ('Wolf Alice','How Can I Make It OK? (Lullaby Version)'),
+            ('daine','dying'),
+            ('Snail Mail','Automate')
+          ]
+          S=requests.Session();S.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36'
+          norm=lambda s:re.sub(r'[^a-z0-9]+',' ',s.casefold()).strip()
+          rows=[]
+          for artist,title in targets:
+            d=S.get('https://itunes.apple.com/search',params={'term':f'{artist} {title}','entity':'song','limit':100,'country':'US'},timeout=45).json()
+            exact=[x for x in d.get('results',[]) if norm(x.get('artistName',''))==norm(artist) and norm(x.get('trackName',''))==norm(title) and x.get('previewUrl')]
+            if not exact:
+              nt=norm(title);exact=[x for x in d.get('results',[]) if norm(artist) in norm(x.get('artistName','')) and (nt in norm(x.get('trackName','')) or norm(x.get('trackName','')) in nt) and x.get('previewUrl')]
+            if not exact:
+              print('NO MATCH',artist,title);continue
+            x=exact[0];slug=lambda s:re.sub(r'[^a-z0-9]+','-',s.casefold()).strip('-')[:80]
+            fn=f'{slug(artist)}__{x.get("trackId")}__{slug(title)}.m4a'
+            r=S.get(x['previewUrl'],timeout=60);r.raise_for_status();pathlib.Path('previews',fn).write_bytes(r.content)
+            rows.append({'artist':artist,'title':title,'resolved_artist':x.get('artistName'),'resolved_title':x.get('trackName'),'filename':fn,'preview_url':x['previewUrl'],'track_id':x.get('trackId')})
+            print('DOWNLOADED',artist,title,'AS',x.get('artistName'),x.get('trackName'))
+          pathlib.Path('metadata/targets.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False))
+          PY
+
+      - name: Convert and isolate vocals and accompaniment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for f in previews/*.m4a; do b="$(basename "$f" .m4a)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -o separated wavs/*.wav
+
+      - name: Score corrected repeated fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,numpy as np,librosa
+          meta=json.loads(pathlib.Path('metadata/targets.json').read_text())
+          by={pathlib.Path(r['filename']).stem:r for r in meta}
+
+          # Beat-synchronous notes from the cleaner recording, beginning at the first reliable tap.
+          qt=np.array([0.000000,0.580499,1.213243,1.828572,2.426486,2.995375,3.593288,4.197007,4.754286,5.323175,5.961724,6.536418,7.082087,7.633560,8.161814])
+          q=np.array([85.2,85.1,83.4,92.8,84.9,84.95,83.4,92.8,85.4,85.2,83.5,92.5,90.4,91.5,88.1])
+          # The repeated first 12 notes are much more certain than the three-note tail.
+          w=np.array([1.45,1.45,1.35,.85,1.45,1.45,1.35,.85,1.45,1.45,1.35,.85,.60,.60,.55])
+          cycles=[(0,4),(4,8),(8,12)];tail=(12,15)
+
+          def pitch_track(path):
+            y,sr=librosa.load(path,sr=12000,mono=True)
+            f0,voiced,_=librosa.pyin(y,fmin=librosa.note_to_hz('C2'),fmax=librosa.note_to_hz('C7'),sr=sr,frame_length=2048,hop_length=180,fill_na=np.nan)
+            m=librosa.hz_to_midi(f0)
+            return librosa.times_like(m,sr=sr,hop_length=180),m
+
+          def interp(t,m,x):
+            ok=np.isfinite(m)
+            if ok.sum()<6:return np.full_like(x,np.nan,dtype=float)
+            return np.interp(x,t[ok],m[ok],left=np.nan,right=np.nan)
+
+          def compare(t,m):
+            best=None
+            for scale in np.arange(.76,1.261,.02):
+              span=qt[-1]*scale
+              for start in np.arange(0,max(0,t[-1]-span),.04):
+                vals=interp(t,m,start+qt*scale);cover=np.isfinite(vals).mean()
+                if cover<.76:continue
+                # Constant transposition is irrelevant.
+                tr=np.nanmedian(vals-q);a=vals-tr;err=np.abs(a-q)
+                mae=np.nansum(err*w)/np.nansum(w*np.isfinite(err))
+                dv=np.diff(vals);dq=np.diff(q);ok=np.isfinite(dv)
+                iv=np.nansum(np.abs(dv-dq)*ok)/max(ok.sum(),1)
+                dmis=np.nansum((np.sign(dv)!=np.sign(dq))*ok)/max(ok.sum(),1)
+                cyc=[]
+                for lo,hi in cycles:
+                  e=err[lo:hi];ww=w[lo:hi];z=np.isfinite(e)
+                  cyc.append(float(np.sum(e[z]*ww[z])/max(np.sum(ww[z]),1e-9)) if z.any() else 20)
+                lo,hi=tail;e=err[lo:hi];ww=w[lo:hi];z=np.isfinite(e);tailerr=float(np.sum(e[z]*ww[z])/max(np.sum(ww[z]),1e-9)) if z.any() else 20
+                # Reward three consistently good repetitions. One good cycle cannot carry the result.
+                consistency=float(np.std(cyc));worst=max(cyc)
+                score=.75*mae+.38*iv+1.5*dmis+.42*worst+.24*consistency+.10*tailerr+1.5*(1-cover)
+                rec={'score':float(score),'start':float(start),'scale':float(scale),'transpose':float(tr),'coverage':float(cover),'mae':float(mae),'interval_error':float(iv),'direction_mismatch':float(dmis),'cycle_errors':cyc,'cycle_consistency':consistency,'tail_error':tailerr,'observed':[None if not np.isfinite(x) else float(x) for x in vals],'aligned':[None if not np.isfinite(x) else float(x) for x in a]}
+                if best is None or score<best['score']:best=rec
+            return best or {'score':999}
+
+          rows=[]
+          for vocal in pathlib.Path('separated/htdemucs').glob('*/vocals.wav'):
+            stem=vocal.parent.name;nv=vocal.parent/'no_vocals.wav';base=by.get(stem,{})
+            tv,mv=pitch_track(vocal);tn,mn=pitch_track(nv)
+            vr=compare(tv,mv);nr=compare(tn,mn)
+            # A singer match is preferred; accompaniment may win only with a substantial advantage.
+            combined=min(vr['score'],nr['score']+.70)
+            source='vocal' if vr['score']<=nr['score']+.70 else 'accompaniment'
+            rows.append({**base,'vocal':vr,'accompaniment':nr,'combined_score':float(combined),'source':source})
+          rows.sort(key=lambda r:r['combined_score'])
+          pathlib.Path('corrected_results.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False))
+          pathlib.Path('corrected_results.tsv').write_text('\n'.join(f"{r['combined_score']:.6f}\t{r['source']}\t{r.get('artist')}\t{r.get('title')}\tv={r['vocal']['score']:.5f}\ta={r['accompaniment']['score']:.5f}\tcycles={r[r['source']]['cycle_errors']}\tscale={r[r['source']]['scale']:.3f}\tstart={r[r['source']]['start']:.3f}" for r in rows))
+          print(pathlib.Path('corrected_results.tsv').read_text())
+          PY
+
+      - name: Upload corrected verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: corrected-fingerprint-verification
+          path: |
+            corrected_results.json
+            corrected_results.tsv
+            metadata/targets.json
+            previews
+            separated/htdemucs/*/vocals.wav
+            separated/htdemucs/*/no_vocals.wav
+          retention-days: 1
