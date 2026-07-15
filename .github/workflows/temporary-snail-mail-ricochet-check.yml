@@ -1,0 +1,76 @@
+name: Snail Mail Ricochet melody check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  ricochet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa demucs soundfile
+      - name: Recover clean whistle and fetch album previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p query work/audio work/results
+          for n in 00 01 02 03; do
+            curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"
+          done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          python - <<'PY'
+          import json,pathlib,re,requests
+          titles=['Tractor Beam','My Maker','Light on Our Feet','Cruise','Agony Freak','Dead End','Butterfly','Nowhere','Hell','Ricochet','Reverie']
+          s=requests.Session();s.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36'
+          norm=lambda x:re.sub(r'[^a-z0-9]+',' ',(x or '').casefold()).strip()
+          rows=[]
+          for title in titles:
+            d=s.get('https://itunes.apple.com/search',params={'term':f'Snail Mail {title}','entity':'song','limit':100,'country':'US'},timeout=45).json()
+            xs=[x for x in d.get('results',[]) if norm(x.get('artistName'))=='snail mail' and norm(x.get('trackName'))==norm(title) and x.get('previewUrl')]
+            if not xs:
+              print('MISS',title);continue
+            x=xs[0]; fn=re.sub(r'[^a-z0-9]+','-',title.casefold()).strip('-')+'.m4a'
+            r=s.get(x['previewUrl'],timeout=60);r.raise_for_status();pathlib.Path('work/audio',fn).write_bytes(r.content)
+            rows.append({'artist':'Snail Mail','title':title,'filename':fn,'apple_id':x.get('trackId'),'release_date':x.get('releaseDate'),'collection':x.get('collectionName')})
+            print('OK',title,x.get('collectionName'),x.get('releaseDate'),len(r.content))
+          pathlib.Path('work/results/downloaded.json').write_text(json.dumps(rows,indent=2))
+          assert len(rows)>=8, len(rows)
+          PY
+      - name: Separate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/wavs
+          for f in work/audio/*.m4a; do b="$(basename "$f" .m4a)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -n htdemucs -j 1 -o work/separated work/wavs/*.wav
+      - name: Rank continuous vocal contours
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,sys
+          sys.path.insert(0,'.')
+          import tools.full_vocal_contour_search as c
+          rows=json.loads(pathlib.Path('work/results/downloaded.json').read_text())
+          ranked=c.rank(rows,pathlib.Path('work/separated'),'query/clean.ogg',pathlib.Path('work/results'),workers=3)
+          c.package_top(ranked,pathlib.Path('work/results'),pathlib.Path('work/top_vocals'),n=20)
+          PY
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snail-mail-ricochet-results
+          path: |
+            work/results
+            work/top_vocals
+          retention-days: 2
