@@ -1,0 +1,86 @@
+name: Temporary Top Songs browser scrape
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null
+          npm install --silent playwright
+          npx playwright install --with-deps chromium
+      - name: Capture personalized playlist track data from web player
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          cat > /tmp/scrape.js <<'JS'
+          const { chromium }=require('playwright');
+          const fs=require('fs');
+          const playlists={
+            '2025':'37i9dQZEVXcXHWVVT0lfDq','2024':'37i9dQZF1FoyQGyinuuvRu',
+            '2023':'37i9dQZF1Fa1IIVtEpGUcU','2022':'37i9dQZF1F0sijgNaJdgit',
+            '2021':'37i9dQZF1EUMDoJuT8yJsl','2020':'37i9dQZF1ELWCvHl1C986G'};
+          (async()=>{
+            const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-blink-features=AutomationControlled']});
+            const ctx=await browser.newContext({viewport:{width:1600,height:1200},locale:'en-US',userAgent:'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'});
+            for(const [year,id] of Object.entries(playlists)){
+              const dir=`results/${year}`;fs.mkdirSync(dir,{recursive:true});
+              const page=await ctx.newPage();const network=[];
+              page.on('response',async r=>{
+                const u=r.url(),ct=r.headers()['content-type']||'';
+                if(/playlist|pathfinder|graphql|track|metadata/i.test(u)&&/json|text/.test(ct)){
+                  try{const body=(await r.text()).slice(0,2000000);network.push({status:r.status(),url:u,body});}catch(_){}
+                }
+              });
+              try{
+                await page.goto(`https://open.spotify.com/playlist/${id}`,{waitUntil:'domcontentloaded',timeout:90000});
+                await page.waitForTimeout(8000);
+                // Dismiss cookie/modal overlays when present.
+                for(const label of [/accept/i,/close/i,/not now/i]){try{await page.getByRole('button',{name:label}).first().click({timeout:1000})}catch(_){}}
+                for(let i=0;i<18;i++){await page.mouse.wheel(0,1100);await page.waitForTimeout(500)}
+                const links=await page.locator('a[href*="/track/"]').evaluateAll(as=>as.map(a=>({href:a.href,text:(a.innerText||a.textContent||'').trim(),aria:a.getAttribute('aria-label'),title:a.getAttribute('title')})));
+                const rows=await page.locator('[data-testid="tracklist-row"], [role="row"]').evaluateAll(rs=>rs.map(r=>({text:(r.innerText||'').trim(),html:r.outerHTML.slice(0,12000)})));
+                fs.writeFileSync(`${dir}/links.json`,JSON.stringify(links,null,2));
+                fs.writeFileSync(`${dir}/rows.json`,JSON.stringify(rows,null,2));
+                fs.writeFileSync(`${dir}/body.txt`,await page.locator('body').innerText());
+                fs.writeFileSync(`${dir}/page.html`,await page.content());
+                await page.screenshot({path:`${dir}/page.png`,fullPage:true});
+              }catch(e){fs.writeFileSync(`${dir}/error.txt`,String(e));try{await page.screenshot({path:`${dir}/error.png`,fullPage:true})}catch(_){}}
+              fs.writeFileSync(`${dir}/network.json`,JSON.stringify(network,null,2));
+              await page.close();
+            }
+            await ctx.close();await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          NODE_PATH="$PWD/node_modules" node /tmp/scrape.js
+          python - <<'PY'
+          import json,pathlib,re
+          allrows=[]
+          for d in sorted(pathlib.Path('results').iterdir()):
+            if not d.is_dir():continue
+            links=json.loads((d/'links.json').read_text()) if (d/'links.json').exists() else []
+            seen=set()
+            for x in links:
+              m=re.search(r'/track/([A-Za-z0-9]+)',x.get('href',''))
+              if m and m.group(1) not in seen:
+                seen.add(m.group(1));allrows.append({'year':d.name,'track_id':m.group(1),'text':x.get('text'),'aria':x.get('aria'),'title':x.get('title')})
+            print(d.name,'track links',len(seen))
+          pathlib.Path('results/all_track_links.json').write_text(json.dumps(allrows,indent=2,ensure_ascii=False))
+          print('TOTAL',len(allrows))
+          PY
+      - name: Upload browser scrape
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: top-songs-browser-scrape
+          path: results
+          retention-days: 1
