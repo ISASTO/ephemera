@@ -41,7 +41,7 @@ jobs:
         env:
           ARTISTS: '["NewDad","Pearly Drops","Slow Pulp","Hatchie","Fazerdaze","Momma","Crumb","Alvvays","Blondshell","Softcult","julie","bôa","Wolf Alice","Soccer Mommy","Snail Mail","Just Mustard","Men I Trust","The Japanese House","Cults","Beach House"]'
         run: |
-          python tools/piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+          python piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
 
       - name: Upload ranked results
         if: always()
