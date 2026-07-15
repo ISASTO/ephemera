@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Recover and prepare the real cleaned whistle
+      - name: Recover and prepare the full real whistle
         shell: bash
         run: |
           set -u
@@ -23,29 +23,50 @@ jobs:
           mkdir -p query results
           : > results/recovery-log.txt
 
-          recover() {
+          recover_full() {
             label="$1"; source_file="$2"; out="query/${label}.ogg"
             echo "TRY $label FROM $source_file" | tee -a results/recovery-log.txt
             base64 --decode --ignore-garbage "$source_file" > "$out" 2>>results/recovery-log.txt || true
             wc -c "$source_file" "$out" | tee -a results/recovery-log.txt
-            if ffprobe -v error -show_entries format=duration,size -of json "$out" > "results/${label}-probe.json" 2>>results/recovery-log.txt; then
+            duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$out" 2>>results/recovery-log.txt || true)"
+            size="$(wc -c < "$out")"
+            echo "DURATION=$duration SIZE=$size" | tee -a results/recovery-log.txt
+            if python - "$duration" "$size" <<'PY'
+          import sys
+          try:
+              duration=float(sys.argv[1]); size=int(sys.argv[2])
+          except Exception:
+              raise SystemExit(1)
+          raise SystemExit(0 if duration >= 10.0 and size >= 30000 else 1)
+          PY
+            then
               cp "$out" query/source.ogg
-              echo "VALID $label" | tee -a results/recovery-log.txt
+              ffprobe -v error -show_entries format=duration,size -of json "$out" > "results/${label}-probe.json"
+              echo "VALID FULL SOURCE: $label" | tee -a results/recovery-log.txt
               return 0
             fi
-            echo "INVALID $label" | tee -a results/recovery-log.txt
+            echo "REJECTED SHORT OR INVALID SOURCE: $label" | tee -a results/recovery-log.txt
             return 1
           }
 
           recovered=0
-          recover harmonic temporary-query/clean_harmonic.ogg.b64 && recovered=1
-          if [ "$recovered" -eq 0 ]; then recover exact temporary-query/exact_00.b64 && recovered=1; fi
-          if [ "$recovered" -eq 0 ]; then
-            cat temporary-query/chunk_*.b64 > query/chunks.b64
-            recover chunks query/chunks.b64 && recovered=1
+
+          # These four original chunks contain the complete 11.47-second cleaned recording.
+          cat temporary-query/chunk_00.b64 temporary-query/chunk_01.b64 temporary-query/chunk_02.b64 temporary-query/chunk_03.b64 > query/original-chunks.b64
+          recover_full original_chunks query/original-chunks.b64 && recovered=1
+
+          # A second independently generated copy is being uploaded in five chunks.
+          if [ "$recovered" -eq 0 ] && ls temporary-query/real_chunk_*.b64 >/dev/null 2>&1; then
+            cat temporary-query/real_chunk_*.b64 > query/real-chunks.b64
+            recover_full real_chunks query/real-chunks.b64 && recovered=1
           fi
+
+          # Never accept the old three-second harmonic fragment as a complete query.
+          if [ "$recovered" -eq 0 ]; then recover_full harmonic temporary-query/clean_harmonic.ogg.b64 && recovered=1; fi
+          if [ "$recovered" -eq 0 ]; then recover_full exact temporary-query/exact_00.b64 && recovered=1; fi
+
           if [ "$recovered" -eq 0 ]; then
-            echo 'NO VALID AUDIO SOURCE' | tee -a results/recovery-log.txt
+            echo 'NO VALID FULL-LENGTH AUDIO SOURCE' | tee -a results/recovery-log.txt
             exit 1
           fi
 
@@ -118,6 +139,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aha-real-whistle-results
+          name: aha-real-whistle-full-results
           path: results
           retention-days: 1
