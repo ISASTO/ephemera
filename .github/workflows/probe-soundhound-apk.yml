@@ -1,0 +1,112 @@
+name: Probe SoundHound Android client
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Install inspection tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq unzip binutils aapt apktool default-jre curl jq
+          pip install --quiet requests
+
+      - name: Locate and download public SoundHound APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results apk
+          python - <<'PY'
+          import json,pathlib,requests,re,sys
+          s=requests.Session();s.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36'
+          package='com.melodis.midomiMusicIdentifier.freemium'
+          urls=[
+            f'https://ws75.aptoide.com/api/7/app/get/package_name={package}',
+            f'https://ws2.aptoide.com/api/7/app/get/package_name={package}',
+            'https://ws75.aptoide.com/api/7/apps/search/query=soundhound/limit=20',
+            'https://ws2.aptoide.com/api/7/apps/search/query=soundhound/limit=20',
+          ]
+          reports=[]; candidates=[]
+          for u in urls:
+            try:
+              r=s.get(u,timeout=45);reports.append({'url':u,'status':r.status_code,'headers':dict(r.headers),'prefix':r.text[:1000]})
+              pathlib.Path('results',re.sub(r'[^a-z0-9]+','_',u.casefold()).strip('_')[-120:]+'.json').write_text(r.text)
+              if r.status_code==200:
+                d=r.json()
+                stack=[d]
+                while stack:
+                  x=stack.pop()
+                  if isinstance(x,dict):
+                    if x.get('package')==package or x.get('package_name')==package:
+                      candidates.append(x)
+                    stack.extend(x.values())
+                  elif isinstance(x,list): stack.extend(x)
+            except Exception as e: reports.append({'url':u,'error':repr(e)})
+          pathlib.Path('results/api_report.json').write_text(json.dumps(reports,indent=2))
+          pathlib.Path('results/candidates.json').write_text(json.dumps(candidates,indent=2))
+          print('CANDIDATES',len(candidates))
+          download_urls=[]
+          def walk(x):
+            if isinstance(x,dict):
+              for k,v in x.items():
+                if isinstance(v,str) and ('apk' in k.casefold() or v.endswith('.apk') or 'cdn' in v) and v.startswith('http'):
+                  download_urls.append((k,v))
+                walk(v)
+            elif isinstance(x,list):
+              for v in x: walk(v)
+          for c in candidates: walk(c)
+          print('URLS',download_urls)
+          for key,url in download_urls:
+            try:
+              r=s.get(url,stream=True,timeout=120);r.raise_for_status()
+              p=pathlib.Path('apk/soundhound.apk')
+              with p.open('wb') as f:
+                for chunk in r.iter_content(1024*1024):
+                  if chunk:f.write(chunk)
+              if p.stat().st_size>1000000:
+                print('DOWNLOADED',url,p.stat().st_size);break
+            except Exception as e: print('DOWNLOAD_FAIL',url,e)
+          p=pathlib.Path('apk/soundhound.apk')
+          if not p.exists() or p.stat().st_size<1000000:
+            raise SystemExit('No valid APK downloaded')
+          PY
+          sha256sum apk/soundhound.apk | tee results/apk_sha256.txt
+          ls -lh apk/soundhound.apk
+
+      - name: Inspect manifest, classes, native libraries, and endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          aapt dump badging apk/soundhound.apk > results/badging.txt || true
+          aapt dump permissions apk/soundhound.apk > results/permissions.txt || true
+          aapt dump xmltree apk/soundhound.apk AndroidManifest.xml > results/manifest_tree.txt || true
+          unzip -l apk/soundhound.apk > results/archive_listing.txt
+          mkdir -p extracted
+          unzip -q apk/soundhound.apk -d extracted
+          find extracted -type f -maxdepth 5 -printf '%p %s\n' | sort > results/files.txt
+          : > results/interesting_strings.txt
+          find extracted -type f \( -name '*.so' -o -name '*.dex' -o -name '*.xml' -o -name '*.json' \) -print0 | while IFS= read -r -d '' f; do
+            echo "===== $f =====" >> results/interesting_strings.txt
+            strings "$f" 2>/dev/null | grep -Eai 'https?://|recogn|midomi|soundhound|melodis|search|humming|audio|fingerprint|query|api|upload|stream' | head -n 500 >> results/interesting_strings.txt || true
+          done
+          apktool d -f -o decoded apk/soundhound.apk >/tmp/apktool.log 2>&1 || true
+          grep -RIEan 'https?://|recogn|midomi|soundhound|melodis|humming|audio|fingerprint|upload' decoded 2>/dev/null | head -n 10000 > results/decoded_hits.txt || true
+          cp /tmp/apktool.log results/apktool.log
+          du -sh extracted decoded >> results/sizes.txt
+
+      - name: Upload inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundhound-apk-inspection
+          path: |
+            results
+            apk/soundhound.apk
+          retention-days: 1
