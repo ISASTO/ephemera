@@ -1,0 +1,148 @@
+name: Fast compiled Hooktheory melody search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search-fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Install dependencies
+        run: pip install --quiet numpy numba requests
+
+      - name: Download symbolic melody corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data results
+          curl -fL --retry 5 -o data/Hooktheory.json.gz 'https://github.com/chrisdonahue/sheetsage-data/raw/refs/heads/main/hooktheory/Hooktheory.json.gz'
+
+      - name: Run compiled local-alignment search
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/fast.py <<'PY'
+          import gzip,json,math,pathlib
+          import numpy as np
+          from numba import njit
+
+          variants=[
+            ('full_with_pickups',[85,88,85,83,90,93,85,85,83,90,93,85,85,83,90,93,90,92,90,88],[0,.20,.40,.95,1.70,2.20,2.30,2.80,3.35,4.10,4.55,4.70,5.10,5.70,6.40,6.70,6.90,7.50,8.00,8.20]),
+            ('three_cells_and_tag',[85,83,90,93,85,83,90,93,85,83,90,93,90,92,90,88],[0,.95,1.70,2.20,2.30,3.35,4.10,4.55,4.70,5.70,6.40,6.70,6.90,7.50,8.00,8.20]),
+            ('two_cells_and_tag',[85,83,90,93,85,83,90,93,90,92,90,88],[0,1.05,1.80,2.25,2.40,3.40,4.10,4.45,4.65,5.25,5.75,5.95]),
+            ('cell_repetition_only',[85,83,90,93,85,83,90,93,85,83,90,93],[0,.95,1.70,2.20,2.30,3.35,4.10,4.55,4.70,5.70,6.40,6.70]),
+            ('expanded_cell',[85,88,85,83,90,93,85,88,85,83,90,93,85,88,85,83,90,93],[0,.20,.40,.95,1.70,2.20,2.30,2.50,2.70,3.35,4.10,4.55,4.70,4.90,5.10,5.70,6.40,6.70]),
+          ]
+          Q=[]
+          for name,p,o in variants:
+            p=np.asarray(p,np.float32);o=np.asarray(o,np.float32)
+            qi=np.diff(p).astype(np.float32)
+            qd=np.diff(o).astype(np.float32);qd/=np.median(qd)
+            Q.append((name,qi,qd))
+
+          @njit(cache=True)
+          def interval_distance(qi,ci):
+            d0=abs(qi-ci);d1=abs(qi-(ci+12.0));d2=abs(qi-(ci-12.0))
+            pitch=min(d0,d1,d2)
+            sign=0.0
+            if abs(qi)>=0.75 and abs(ci)>=0.75 and ((qi>0)!=(ci>0)): sign=2.0
+            leap=0.0
+            if qi>=5.0:
+              if ci<4.0: leap+=2.3
+              else: leap+=0.45*abs(qi-ci)
+            if qi<=-2.0 and ci>-1.0: leap+=1.2
+            return 0.42*pitch+sign+leap
+
+          @njit(cache=True)
+          def align(qi,qd,ci,cd):
+            n=qi.shape[0];m=ci.shape[0]
+            if m<3:return 999.0,0,0
+            prev=np.zeros(m+1,np.float32)
+            curr=np.empty(m+1,np.float32)
+            starts_prev=np.arange(m+1,dtype=np.int32)
+            starts_curr=np.empty(m+1,np.int32)
+            # Store only enough back information to estimate end and start from winning path.
+            origin=np.zeros((n+1,m+1),np.int32)
+            for j in range(m+1): origin[0,j]=j
+            for i in range(1,n+1):
+              curr[0]=i*1.35;origin[i,0]=0
+              for j in range(1,m+1):
+                rhythm=0.34*abs(math.log(max(qd[i-1],0.12)/max(cd[j-1],0.12)))
+                a=prev[j-1]+interval_distance(qi[i-1],ci[j-1])+rhythm
+                b=prev[j]+1.35
+                c=curr[j-1]+1.05
+                if a<=b and a<=c:
+                  curr[j]=a;origin[i,j]=origin[i-1,j-1]
+                elif b<=c:
+                  curr[j]=b;origin[i,j]=origin[i-1,j]
+                else:
+                  curr[j]=c;origin[i,j]=origin[i,j-1]
+              temp=prev;prev=curr;curr=temp
+            bestj=0;best=prev[0]
+            for j in range(1,m+1):
+              if prev[j]<best:best=prev[j];bestj=j
+            return best/max(n,1),origin[n,bestj],bestj
+
+          @njit(cache=True)
+          def repetition_hits(ci,start,end):
+            hits=0
+            lo=max(0,start);hi=min(ci.shape[0],end)
+            for i in range(lo,hi-2):
+              if ci[i]<=-1.0 and ci[i+1]>=5.0 and ci[i+2]>=1.0:hits+=1
+            return min(hits,3)
+
+          def nearest_octave(x):
+            return ((x+6)%12)-6
+
+          with gzip.open('data/Hooktheory.json.gz','rt') as f:data=json.load(f)
+          print('ANNOTATIONS',len(data),flush=True)
+          # Compile before timing real work.
+          align(Q[0][1],Q[0][2],np.array([-2,7,3,-2,7,3],np.float32),np.ones(6,np.float32))
+          rows=[]
+          for index,(key,item) in enumerate(data.items(),1):
+            ann=item.get('annotations') or {};notes=ann.get('melody') or []
+            if len(notes)<5:continue
+            notes=sorted(notes,key=lambda n:(n.get('onset',0),n.get('offset',0)))
+            events=[]
+            for n in notes:
+              try:p=float(n['pitch_class'])+12*float(n.get('octave',0));t=float(n['onset'])
+              except Exception:continue
+              if events and abs(t-events[-1][0])<1e-6:
+                if p>events[-1][1]:events[-1]=(t,p)
+              else:events.append((t,p))
+            if len(events)<5:continue
+            cp=np.asarray([x[1] for x in events],np.float32);co=np.asarray([x[0] for x in events],np.float32)
+            ci=nearest_octave(np.diff(cp)).astype(np.float32)
+            cd=np.diff(co).astype(np.float32);positive=cd[cd>0]
+            med=float(np.median(positive)) if positive.size else 1.0
+            cd=np.maximum(cd/med,0.08).astype(np.float32)
+            best=None
+            for name,qi,qd in Q:
+              raw,start,end=align(qi,qd,ci,cd)
+              hits=int(repetition_hits(ci,start,end));score=float(raw-0.13*hits)
+              rec={'variant':name,'raw_score':float(raw),'score':score,'hits':hits,'start_interval':int(start),'end_interval':int(end)}
+              if best is None or score<best['score']:best=rec
+            meta=item.get('hooktheory') or {}
+            rows.append({'score':best['score'],'match':best,'id':key,'artist':meta.get('artist'),'song':meta.get('song'),'url':(meta.get('urls') or {}).get('song'),'youtube':(item.get('youtube') or {}).get('url'),'tags':item.get('tags'),'num_events':len(events)})
+            if index%4000==0:print('PROGRESS',index,len(rows),flush=True)
+          rows.sort(key=lambda r:r['score'])
+          pathlib.Path('results/rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False))
+          lines=[]
+          for i,r in enumerate(rows[:1000],1):
+            m=r['match'];lines.append(f"{i}\t{r['score']:.5f}\t{m['variant']}\thits={m['hits']}\t{r['artist']}\t{r['song']}\t{r['url']}\t{r['youtube']}")
+          pathlib.Path('results/top1000.tsv').write_text('\n'.join(lines))
+          print('\n'.join(lines[:150]))
+          PY
+          python /tmp/fast.py
+
+      - name: Upload fast rankings
+        uses: actions/upload-artifact@v4
+        with:
+          name: hooktheory-fast-rankings
+          path: results
+          retention-days: 2
