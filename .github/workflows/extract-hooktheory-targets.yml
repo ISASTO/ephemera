@@ -1,0 +1,70 @@
+name: Extract Hooktheory match spans
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download dataset and extract target spans
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          curl -fL --retry 5 -o Hooktheory.json.gz 'https://github.com/chrisdonahue/sheetsage-data/raw/refs/heads/main/hooktheory/Hooktheory.json.gz'
+          python - <<'PY'
+          import gzip,json,pathlib,numpy as np
+          targets={
+            'ZwxKAMKGmed':('portishead','the-rip',0,13),
+            'eWxLJzKEmaK':('alvvays','adult-diversion',9,21),
+            'JkmZYydJoqn':('claud','wish-you-were-gay',14,26),
+            'JNgqGweJorz':('beach-house','walk-in-the-park',16,29),
+          }
+          with gzip.open('Hooktheory.json.gz','rt') as f:data=json.load(f)
+          out=[]
+          for key,(artist,song,start_i,end_i) in targets.items():
+            item=data[key];notes=sorted((item.get('annotations') or {}).get('melody') or [],key=lambda n:(n.get('onset',0),n.get('offset',0)))
+            events=[]
+            for n in notes:
+              p=float(n['pitch_class'])+12*float(n.get('octave',0));on=float(n['onset']);off=float(n['offset'])
+              if events and abs(on-events[-1]['onset'])<1e-6:
+                if p>events[-1]['pitch']:events[-1]={'onset':on,'offset':off,'pitch':p,'pitch_class':n['pitch_class'],'octave':n.get('octave',0)}
+              else:events.append({'onset':on,'offset':off,'pitch':p,'pitch_class':n['pitch_class'],'octave':n.get('octave',0)})
+            alignment=(item.get('alignment') or {}).get('refined') or (item.get('alignment') or {}).get('user') or {}
+            beats=np.asarray(alignment.get('beats') or [],float);times=np.asarray(alignment.get('times') or [],float)
+            def b2t(b):
+              if len(beats)<2:return None
+              return float(np.interp(b,beats,times))
+            lo=max(0,start_i);hi=min(len(events)-1,end_i)
+            sub=events[lo:hi+1]
+            pitches=np.asarray([e['pitch'] for e in sub],float)
+            intervals=np.diff(pitches)
+            intervals=((intervals+6)%12)-6
+            for e in sub:
+              e['time']=b2t(e['onset']);e['end_time']=b2t(e['offset'])
+            meta=item.get('hooktheory') or {}
+            rec={
+              'id':key,'artist':artist,'song':song,'event_count':len(events),
+              'start_interval':start_i,'end_interval':end_i,
+              'start_event':lo,'end_event':hi,
+              'start_beat':sub[0]['onset'],'end_beat':sub[-1]['offset'],
+              'start_time':sub[0]['time'],'end_time':sub[-1]['end_time'],
+              'pitches':pitches.tolist(),'intervals':intervals.tolist(),'events':sub,
+              'alignment':alignment,'youtube':item.get('youtube'),'urls':meta.get('urls')
+            }
+            out.append(rec)
+            print('\n',artist,song,'TIME',rec['start_time'],rec['end_time'],'BEATS',rec['start_beat'],rec['end_beat'])
+            print('PITCHES',rec['pitches'])
+            print('INTERVALS',rec['intervals'])
+          pathlib.Path('results/target_spans.json').write_text(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hooktheory-target-spans
+          path: results
+          retention-days: 2
