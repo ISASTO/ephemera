@@ -1,4 +1,4 @@
-name: Temporary AHA and history candidate check
+name: Temporary full-AHA candidate verification
 
 on:
   pull_request:
@@ -16,15 +16,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           pip install --quiet numpy scipy librosa demucs
-      - name: Download exact previews
+      - name: Download exact AHA-result previews
         shell: bash
         run: |
           set -euo pipefail
           mkdir previews
-          curl -fL --retry 3 -o previews/pastel-haze__janitors-keys.mp3 'https://p.scdn.co/mp3-preview/71f27090e5fa51e640874b38bf93eea044f46204.mp3'
-          curl -fL --retry 3 -o previews/sarah-kinsley__glint.mp3 'https://p.scdn.co/mp3-preview/296aa155cd53da7a922aebfb147a75efd4082c94.mp3'
-          curl -fL --retry 3 -o previews/sarah-kinsley__realms.mp3 'https://p.scdn.co/mp3-preview/2931df16b1b92e6cd3e88101db7aa5950daad08e.mp3'
-          curl -fL --retry 3 -o previews/sarah-kinsley__last-time-we-never-meet-again.mp3 'https://p.scdn.co/mp3-preview/4f40e35229d7ca74d26c7a7706bfb482f0291947.mp3'
+          curl -fL --retry 3 -o previews/red-diamond-dogs__memory-rain.mp3 'https://p.scdn.co/mp3-preview/ecd7033dcbbd013d01897428c9753a7d9b4b7feb.mp3'
+          curl -fL --retry 3 -o previews/youha__satellite.mp3 'https://p.scdn.co/mp3-preview/141bc25a0b82019a4902bb23469a7571431c6e86.mp3'
+          curl -fL --retry 3 -o previews/andreas-resch__take-you-higher.mp3 'https://p.scdn.co/mp3-preview/59241f062ead4cff20a244ea346eddb851e2288f.mp3'
       - name: Separate and rank vocal and accompaniment
         shell: bash
         run: |
@@ -80,7 +79,7 @@ jobs:
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: aha-history-candidate-check
+          name: full-aha-candidate-check
           path: |
             results.json
             results.tsv
