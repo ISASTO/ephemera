@@ -1,4 +1,4 @@
-name: Temporary Spotify playlist ingestion debug
+name: Temporary deep related-artist melody search
 
 on:
   pull_request:
@@ -8,59 +8,340 @@ permissions:
   contents: read
 
 jobs:
-  debug:
+  search:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
-      - name: Inspect public Spotify playlist surfaces
+      - name: Install audio and catalog dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy scipy librosa soundfile requests beautifulsoup4 demucs
+
+      - name: Build related-artist graph and screen catalogs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p debug
+          mkdir -p work/previews work/top_previews work/separated work/results
           python - <<'PY'
-          import json, pathlib, re, requests
-          pid='0KYyZmo05ynpxxWOhiaNUI'
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36','Accept-Language':'en-US,en;q=0.9'})
-          urls={
-            'home':'https://open.spotify.com/',
-            'playlist':f'https://open.spotify.com/playlist/{pid}',
-            'embed':f'https://open.spotify.com/embed/playlist/{pid}',
-            'token':'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
-            'oembed':f'https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/{pid}',
-          }
-          summary={}
-          for name,u in urls.items():
+          import concurrent.futures as cf
+          import json, math, os, pathlib, re, shutil, subprocess, time, urllib.parse
+          import requests
+          import numpy as np
+          import librosa
+          from bs4 import BeautifulSoup
+
+          ROOT=pathlib.Path('work')
+          S=requests.Session()
+          S.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36','Accept-Language':'en-US,en;q=0.9'})
+
+          seeds=[
+            'NewDad','Pearly Drops','Sarah Kinsley','Dora Jar','Devon Again','ggwendolyn','spill tab','daine',
+            'Hatchie','Slow Pulp','Momma','Blondshell','Wisp','Fazerdaze','Wolf Alice','The Japanese House',
+            'Soccer Mommy','Snail Mail','Alvvays','Just Mustard','Julie','Softcult','Crumb','TOPS','Men I Trust',
+            'Magdalena Bay','Pale Waves','Beach Bunny','Mitski','Japanese Breakfast','Cults','Warpaint'
+          ]
+          rejected={x.casefold() for x in [
+            'Wallice','Suzy Sheer','Lana Del Rey','Cults','The Japanese House','Men I Trust'
+          ]}
+
+          def spotify_token():
             try:
-              r=s.get(u,timeout=45,allow_redirects=True)
-              summary[name]={'status':r.status_code,'url':r.url,'headers':dict(r.headers),'length':len(r.content),'content_type':r.headers.get('content-type')}
-              suffix='json' if 'json' in (r.headers.get('content-type') or '') else 'html'
-              pathlib.Path(f'debug/{name}.{suffix}').write_bytes(r.content)
-              print(name,r.status_code,len(r.content),r.url,r.headers.get('content-type'))
+              r=S.get('https://open.spotify.com/get_access_token?reason=transport&productType=web_player',timeout=30)
+              r.raise_for_status(); d=r.json(); return d.get('accessToken') or d.get('access_token')
             except Exception as e:
-              summary[name]={'error':repr(e)}; print(name,'ERROR',repr(e))
-          # Search playlist/embed HTML for likely hydration blobs and track-like structures.
-          for name in ('playlist','embed'):
-            p=pathlib.Path(f'debug/{name}.html')
-            if not p.exists(): continue
-            text=p.read_text(errors='ignore')
-            findings={
-              'script_srcs':re.findall(r'<script[^>]+src=["\']([^"\']+)',text),
-              'json_script_ids':re.findall(r'<script[^>]+(?:id|data-testid)=["\']([^"\']+)["\'][^>]*type=["\']application/(?:ld\+)?json["\']',text,re.I),
-              'spotify_uris':list(dict.fromkeys(re.findall(r'spotify:track:[A-Za-z0-9]+',text)))[:100],
-              'track_urls':list(dict.fromkeys(re.findall(r'https://open\.spotify\.com/track/[A-Za-z0-9]+',text)))[:100],
-              'keywords':{k:text.find(k) for k in ['__NEXT_DATA__','initialState','initial-state','hydration','playlistV2','fetchPlaylist','trackList','entityUniqueId','pageProps','Spotify.Entity']},
-            }
-            pathlib.Path(f'debug/{name}-findings.json').write_text(json.dumps(findings,indent=2),encoding='utf-8')
-            # Save compact contexts around useful keywords.
-            contexts=[]
-            for key,pos in findings['keywords'].items():
-              if pos>=0: contexts.append(f'\n===== {key} @ {pos} =====\n'+text[max(0,pos-1000):pos+5000])
-            pathlib.Path(f'debug/{name}-contexts.txt').write_text('\n'.join(contexts),encoding='utf-8')
-          pathlib.Path('debug/summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+              print('SPOTIFY TOKEN FAILED',repr(e)); return None
+
+          token=spotify_token(); print('SPOTIFY TOKEN',bool(token))
+          api=requests.Session()
+          if token: api.headers.update({'Authorization':'Bearer '+token,'User-Agent':S.headers['User-Agent']})
+
+          def spotify_artist_id(name):
+            if not token:return None
+            try:
+              r=api.get('https://api.spotify.com/v1/search',params={'q':'artist:'+name,'type':'artist','limit':10},timeout=30)
+              if r.status_code!=200:return None
+              items=r.json().get('artists',{}).get('items',[])
+              exact=[x for x in items if x.get('name','').casefold()==name.casefold()]
+              return (exact or items or [{}])[0].get('id')
+            except Exception:return None
+
+          def spotify_related(name):
+            aid=spotify_artist_id(name)
+            if not aid:return []
+            try:
+              r=api.get(f'https://api.spotify.com/v1/artists/{aid}/related-artists',timeout=30)
+              if r.status_code!=200:
+                print('RELATED HTTP',name,r.status_code,r.text[:120]); return []
+              return [x.get('name') for x in r.json().get('artists',[]) if x.get('name')]
+            except Exception as e:
+              print('RELATED FAIL',name,repr(e)); return []
+
+          def lastfm_related(name):
+            urls=[
+              'https://www.last.fm/music/'+urllib.parse.quote(name,safe='')+'/+similar',
+              'https://www.last.fm/music/'+urllib.parse.quote_plus(name)+'/+similar'
+            ]
+            for u in urls:
+              try:
+                r=S.get(u,timeout=35)
+                if r.status_code!=200: continue
+                soup=BeautifulSoup(r.text,'html.parser'); out=[]
+                for a in soup.select('a.link-block-target, a[href*="/+similar"], a[href^="/music/"]'):
+                  text=(a.get('title') or a.get_text(' ',strip=True) or '').strip()
+                  href=a.get('href') or ''
+                  if not text and href.startswith('/music/'):
+                    text=urllib.parse.unquote(href.split('/music/',1)[1].split('/',1)[0]).replace('+',' ')
+                  if text and text.casefold()!=name.casefold() and len(text)<100: out.append(text)
+                # preserve order and remove page chrome
+                clean=[]
+                for x in out:
+                  if x.casefold() not in {y.casefold() for y in clean} and x.casefold() not in {'music','similar artists'}: clean.append(x)
+                if clean:return clean[:30]
+              except Exception as e: print('LASTFM FAIL',name,repr(e))
+            return []
+
+          graph={}; artists=[]
+          for seed in seeds:
+            rel=spotify_related(seed)
+            if not rel: rel=lastfm_related(seed)
+            graph[seed]=rel[:20]
+            artists.append(seed); artists.extend(rel[:15])
+            print('GRAPH',seed,'=>',rel[:10])
+          # one limited second hop from the most central new names
+          first=[]
+          for x in artists:
+            if x and x.casefold() not in {y.casefold() for y in first}: first.append(x)
+          for name in first[:70]:
+            if name in graph:continue
+            rel=spotify_related(name)
+            if not rel: rel=lastfm_related(name)
+            graph[name]=rel[:10]; artists.extend(rel[:5])
+          unique=[]
+          for x in artists:
+            x=(x or '').strip()
+            if x and x.casefold() not in {y.casefold() for y in unique}: unique.append(x)
+          # include seeds even if rejected; reject only already disproven named artists from promotion
+          unique=unique[:260]
+          pathlib.Path('work/results/artist_graph.json').write_text(json.dumps(graph,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('work/results/artists.txt').write_text('\n'.join(unique),encoding='utf-8')
+          print('UNIQUE ARTISTS',len(unique))
+
+          def itunes_catalog(artist):
+            try:
+              r=S.get('https://itunes.apple.com/search',params={'term':artist,'entity':'song','limit':200,'country':'US'},timeout=45)
+              r.raise_for_status(); data=r.json()
+            except Exception as e:
+              print('CATALOG FAIL',artist,repr(e)); return []
+            out=[]; seen=set()
+            for x in data.get('results',[]):
+              if x.get('artistName','').casefold()!=artist.casefold() or not x.get('previewUrl'):continue
+              title=(x.get('trackName') or '').strip(); key=(title.casefold(),x.get('trackId'))
+              year=str(x.get('releaseDate') or '')[:4]
+              try: yi=int(year)
+              except: yi=0
+              if yi and yi<2010: continue
+              # remove duplicate editions but keep materially different acoustic/live/remix versions
+              base=re.sub(r'\s*[\(\[].*?[\)\]]\s*',' ',title.casefold())
+              base=re.sub(r'\s+',' ',base).strip()
+              edition_words=('live','acoustic','remix','demo','session','version','edit')
+              ed=next((w for w in edition_words if w in title.casefold()),'studio')
+              dkey=(base,ed)
+              if dkey in seen:continue
+              seen.add(dkey)
+              out.append({'artist':artist,'title':title,'track_id':x.get('trackId'),'preview_url':x['previewUrl'],'release_date':x.get('releaseDate'),'collection':x.get('collectionName')})
+            return out
+
+          allrows=[]
+          with cf.ThreadPoolExecutor(max_workers=16) as ex:
+            futs={ex.submit(itunes_catalog,a):a for a in unique}
+            for fut in cf.as_completed(futs):
+              a=futs[fut]
+              try:
+                rows=fut.result(); allrows.extend(rows); print('CAT',a,len(rows))
+              except Exception as e: print('CAT EXC',a,repr(e))
+          # de-dupe by track id
+          ded={}
+          for r in allrows: ded[str(r['track_id'])]=r
+          allrows=list(ded.values())
+          print('TOTAL TRACKS',len(allrows))
+          pathlib.Path('work/results/catalog.json').write_text(json.dumps(allrows,indent=2,ensure_ascii=False),encoding='utf-8')
+
+          def slug(s): return re.sub(r'[^a-z0-9]+','-',s.casefold()).strip('-')[:80]
+          def download(row):
+            fn=f"{slug(row['artist'])}__{row['track_id']}__{slug(row['title'])}.m4a"; p=ROOT/'previews'/fn
+            if p.exists() and p.stat().st_size>50000:return str(p)
+            try:
+              rr=S.get(row['preview_url'],timeout=60); rr.raise_for_status(); p.write_bytes(rr.content)
+              if p.stat().st_size<50000: raise RuntimeError('tiny preview')
+              return str(p)
+            except Exception as e:
+              print('DL FAIL',row['artist'],row['title'],repr(e)); return None
+          with cf.ThreadPoolExecutor(max_workers=20) as ex:
+            paths=list(ex.map(download,allrows))
+          path_by_id={p.name.split('__')[1]:p for p in ROOT.joinpath('previews').glob('*.m4a')}
+          print('DOWNLOADED',len(path_by_id))
+
+          # Beat-locked fingerprint. High notes and the ending carry lower confidence than the repeated low-leap skeleton.
+          qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
+          q=np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88.0])
+          qpc=np.rint(q).astype(int)%12
+          qw=np.array([1.2,1.3,1.3,.75,1.2,1.3,1.3,.75,1.2,1.3,.85,.75,.65,.65,.6])
+          contours={
+            'full':(qt,qpc,qw),
+            'first11':(qt[:11],qpc[:11],qw[:11]),
+            'two_cycles':(qt[:8],qpc[:8],qw[:8]),
+            'cycle':(qt[:4],qpc[:4],qw[:4]),
+            'tag':(qt[11:]-qt[11],qpc[11:],qw[11:]),
+          }
+          sr=11025; hop=512; fps=sr/hop
+          def decode(path):
+            p=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True)
+            if p.returncode: raise RuntimeError(p.stderr.decode(errors='ignore')[:200])
+            return np.frombuffer(p.stdout,dtype='<f4')
+          def chroma_scores(path):
+            y=decode(path)
+            C=librosa.feature.chroma_cqt(y=y,sr=sr,hop_length=hop,bins_per_octave=36,n_chroma=12)
+            C=np.maximum(C,0); C=C/(C.sum(axis=0,keepdims=True)+1e-8)
+            # emphasize locally melodic peaks, but retain guitar/vocal doubling
+            C=C**1.35; C=C/(C.sum(axis=0,keepdims=True)+1e-8)
+            result={}
+            for name,(times,pcs,weights) in contours.items():
+              best=(-1,None)
+              for scale in np.arange(.72,1.351,.04):
+                rel=np.rint(times*scale*fps).astype(int); span=rel[-1]+1
+                starts=np.arange(0,max(0,C.shape[1]-span),1)
+                if not len(starts):continue
+                cols=starts[:,None]+rel[None,:]
+                for tr in range(12):
+                  vals=C[((pcs+tr)%12)[None,:],cols]
+                  hit=(vals*weights[None,:]).sum(axis=1)/weights.sum()
+                  # prevent one loud chord from carrying a long phrase
+                  thirds=np.array_split(np.arange(vals.shape[1]),min(3,vals.shape[1]))
+                  floor=np.min(np.stack([(vals[:,idx]*weights[idx]).sum(axis=1)/(weights[idx].sum()+1e-9) for idx in thirds]),axis=0)
+                  score=hit+.28*floor
+                  k=int(np.argmax(score))
+                  if score[k]>best[0]: best=(float(score[k]),{'start':float(starts[k]/fps),'scale':float(scale),'transpose':int(tr),'mean':float(hit[k]),'floor':float(floor[k])})
+              result[name]={'score':best[0],**(best[1] or {})}
+            # Composite rewards extended resemblance; partials cannot win on their own.
+            result['composite']=1.8*result['full']['score']+1.2*result['first11']['score']+.7*result['two_cycles']['score']+.25*result['cycle']['score']+.25*result['tag']['score']
+            return result
+
+          idmeta={str(r['track_id']):r for r in allrows}; rankings=[]
+          files=list(ROOT.joinpath('previews').glob('*.m4a'))
+          def analyse_file(p):
+            try:
+              tid=p.name.split('__')[1]; return {**idmeta.get(tid,{}),'filename':p.name,'chroma':chroma_scores(p)}
+            except Exception as e:
+              print('ANALYSIS FAIL',p.name,repr(e)); return None
+          with cf.ThreadPoolExecutor(max_workers=8) as ex:
+            for i,r in enumerate(ex.map(analyse_file,files),1):
+              if r:rankings.append(r)
+              if i%250==0:print('SCREENED',i)
+          rankings.sort(key=lambda r:r['chroma']['composite'],reverse=True)
+          pathlib.Path('work/results/chroma_rankings.json').write_text(json.dumps(rankings,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('work/results/chroma_top.tsv').write_text('\n'.join(f"{r['chroma']['composite']:.6f}\t{r['chroma']['full']['score']:.6f}\t{r['chroma']['first11']['score']:.6f}\t{r['artist']}\t{r['title']}\t{r['filename']}" for r in rankings),encoding='utf-8')
+          print('CHROMA TOP')
+          print(pathlib.Path('work/results/chroma_top.tsv').read_text()[:12000])
+          # copy top 90, excluding already disproven artists only after preserving rankings
+          selected=[]
+          for r in rankings:
+            if r.get('artist','').casefold() in rejected: continue
+            selected.append(r)
+            if len(selected)>=90:break
+          for r in selected:
+            shutil.copy2(ROOT/'previews'/r['filename'],ROOT/'top_previews'/r['filename'])
+          pathlib.Path('work/results/selected.json').write_text(json.dumps(selected,indent=2,ensure_ascii=False),encoding='utf-8')
           PY
-          find debug -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
-      - name: Upload debug responses
+
+      - name: Separate vocals and accompaniment from strongest long-pattern candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/top_wavs
+          for f in work/top_previews/*.m4a; do
+            b="$(basename "$f" .m4a)"
+            ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/top_wavs/${b}.wav"
+          done
+          python -m demucs --two-stems=vocals -o work/separated work/top_wavs/*.wav
+
+      - name: Rank vocal and accompaniment contours with memory-flexible alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, numpy as np, librosa
+          from scipy.ndimage import median_filter
+          ROOT=pathlib.Path('work')
+          selected=json.loads((ROOT/'results/selected.json').read_text())
+          meta={pathlib.Path(r['filename']).stem:r for r in selected}
+          qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
+          q=np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88.0])
+          # uncertain pitches receive smaller weights; contour direction remains important
+          w=np.array([1.3,1.3,1.2,.6,1.3,1.3,1.2,.6,1.3,1.3,.8,.65,.55,.55,.55])
+          groups=[(0,4),(4,8),(8,11),(11,15)]
+          def f0_track(path):
+            y,sr=librosa.load(path,sr=12000,mono=True)
+            f0,voiced,_=librosa.pyin(y,fmin=librosa.note_to_hz('C2'),fmax=librosa.note_to_hz('C7'),sr=sr,frame_length=2048,hop_length=180,fill_na=np.nan)
+            m=librosa.hz_to_midi(f0); t=librosa.times_like(m,sr=sr,hop_length=180)
+            return t,m
+          def interp_at(t,m,x):
+            valid=np.isfinite(m)
+            if valid.sum()<5:return np.full_like(x,np.nan,dtype=float)
+            return np.interp(x,t[valid],m[valid],left=np.nan,right=np.nan)
+          def compare(t,m):
+            best=None
+            for scale in np.arange(.72,1.351,.025):
+              span=qt[-1]*scale
+              for start in np.arange(0,max(0,t[-1]-span),.075):
+                vals=interp_at(t,m,start+qt*scale)
+                cover=np.isfinite(vals).mean()
+                if cover<.72:continue
+                dif=vals-q; tr=np.nanmedian(dif); a=vals-tr
+                err=np.abs(a-q)
+                mae=np.nansum(err*w)/np.nansum(w*np.isfinite(err))
+                dv=np.diff(vals); dq=np.diff(q); mask=np.isfinite(dv)
+                iv=np.nansum(np.abs(dv-dq)*mask)/max(mask.sum(),1)
+                dirs=np.sign(dv); qdirs=np.sign(dq); dirmis=np.nansum((dirs!=qdirs)*mask)/max(mask.sum(),1)
+                g=[]
+                for lo,hi in groups:
+                  e=err[lo:hi]; ww=w[lo:hi]; ok=np.isfinite(e)
+                  g.append(float(np.sum(e[ok]*ww[ok])/max(np.sum(ww[ok]),1e-8)) if ok.any() else 9)
+                # flexible memory model: high notes may be compressed by up to 2 semitones
+                aflex=a.copy(); high=(q>=90); aflex[high]=np.maximum(aflex[high],q[high]-2)
+                flex=np.nansum(np.abs(aflex-q)*w)/np.nansum(w*np.isfinite(aflex))
+                score=.85*mae+.45*iv+1.6*dirmis+.30*max(g)+.20*flex+1.5*(1-cover)
+                rec={'score':float(score),'start':float(start),'scale':float(scale),'transpose':float(tr),'coverage':float(cover),'mae':float(mae),'interval_error':float(iv),'direction_mismatch':float(dirmis),'group_errors':g,'flex_error':float(flex),'observed':[None if not np.isfinite(x) else float(x) for x in vals],'aligned':[None if not np.isfinite(x) else float(x) for x in a]}
+                if best is None or score<best['score']:best=rec
+            return best or {'score':999}
+          rows=[]
+          for vocal in ROOT.glob('separated/*/*/vocals.wav'):
+            stem=vocal.parent.name; base=meta.get(stem,{})
+            novocal=vocal.parent/'no_vocals.wav'
+            tv,mv=f0_track(vocal); ta,ma=f0_track(novocal)
+            vr=compare(tv,mv); ar=compare(ta,ma)
+            combined=min(vr['score'],ar['score']+.65) # prefer a vocal match but allow a guitar-doubled melody
+            rows.append({**base,'vocal':vr,'accompaniment':ar,'combined_score':float(combined),'winning_source':'vocal' if vr['score']<=ar['score']+.65 else 'accompaniment'})
+            print(f"{combined:.4f}\t{base.get('artist')}\t{base.get('title')}\t{rows[-1]['winning_source']}")
+          rows.sort(key=lambda r:r['combined_score'])
+          (ROOT/'results/final_rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          (ROOT/'results/final_top.tsv').write_text('\n'.join(f"{r['combined_score']:.6f}\t{r['winning_source']}\t{r.get('artist')}\t{r.get('title')}\t{r['vocal']['score']:.5f}\t{r['accompaniment']['score']:.5f}\t{r.get('filename')}" for r in rows),encoding='utf-8')
+          print('FINAL TOP')
+          print((ROOT/'results/final_top.tsv').read_text()[:12000])
+          # retain only the ten strongest preview/stem sets for independent inspection
+          out=ROOT/'top_results'; out.mkdir(exist_ok=True)
+          for r in rows[:10]:
+            stem=pathlib.Path(r['filename']).stem
+            for p in [ROOT/'top_previews'/r['filename'],ROOT/'separated'/'htdemucs'/stem/'vocals.wav',ROOT/'separated'/'htdemucs'/stem/'no_vocals.wav']:
+              if p.exists():
+                dst=out/(stem+'__'+p.name if p.name.endswith('.wav') else p.name); dst.write_bytes(p.read_bytes())
+          PY
+
+      - name: Upload compact deep-search results
         uses: actions/upload-artifact@v4
         with:
-          name: spotify-playlist-ingestion-debug
-          path: debug
+          name: deep-related-artist-results
+          path: |
+            work/results
+            work/top_results
           retention-days: 1
