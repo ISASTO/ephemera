@@ -1,4 +1,4 @@
-name: Temporary strict vocal-jump verification
+name: Temporary strict broad-candidate verification A
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
@@ -31,12 +31,16 @@ jobs:
           python - <<'PY'
           import json,pathlib,re,requests
           targets=[
-            ('Snail Mail','Ricochet'),('Snail Mail','Light on Our Feet'),('Snail Mail','Butterfly'),
-            ('Clairo','Bambi'),('The Marías','All I Really Want Is You'),('The Marías','Calling U Back'),
-            ('The Marías','Little by Little'),('The Marías','Hush'),
-            ('Not For Radio','Puddles'),('Not For Radio','Water On Your Nose'),('Not For Radio','Moment'),
-            ('Alvvays','Adult Diversion'),('Portishead','The Rip'),('Claud','Wish You Were Gay'),
-            ('Beach House','Walk in the Park'),('underscores','Hollywood Forever')]
+            ('Mazzy Star','Common Burn (Mixed)'),('Warpaint','Set Your Arms Down'),('Crumb','Up & Down'),
+            ('Billie Eilish','WHEN I WAS OLDER (Music Inspired By The Film ROMA)'),('Weyes Blood','Open Heart'),
+            ('anna luna','Mediterraneo'),('FKA twigs','24hr Dog'),('yeule','bloodbunny'),
+            ('Brothel in Belize','obsession'),('Mitski',"I'm a Fool to Want You"),
+            ('Purity Ring','glacier - in memory of RS'),('Blondshell','Kiss City - Home Demo'),
+            ('Chromatics',"There's a Light Out on the Horizon"),('Caroline Polachek','Welcome To My Island'),
+            ('Still Corners','Parallels'),('Soccer Mommy','Gray Light (Demo)'),('Billie Eilish','i love you'),
+            ('Japanese Breakfast','The Wash Day'),('Chromatics','Shining Violence'),
+            ('Chromatics','The River'),('Eartheater','Bringing Me Back'),('Caroline Polachek','Parachute'),
+            ('Beach House','Tokyo Witch'),('Weyes Blood','Movies'),('Mazzy Star',"I'm Less Here")]
           s=requests.Session();s.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36'
           norm=lambda x:re.sub(r'[^a-z0-9]+',' ',(x or '').casefold()).strip()
           slug=lambda x:re.sub(r'[^a-z0-9]+','-',x.casefold()).strip('-')
@@ -45,11 +49,11 @@ jobs:
             d=s.get('https://itunes.apple.com/search',params={'term':f'{artist} {title}','entity':'song','limit':100,'country':'US'},timeout=45).json()
             xs=[x for x in d.get('results',[]) if norm(x.get('artistName'))==norm(artist) and norm(x.get('trackName'))==norm(title) and x.get('previewUrl')]
             if not xs:
-              xs=[x for x in d.get('results',[]) if norm(artist) in norm(x.get('artistName')) and norm(title) in norm(x.get('trackName')) and x.get('previewUrl')]
+              xs=[x for x in d.get('results',[]) if norm(artist) in norm(x.get('artistName')) and (norm(title) in norm(x.get('trackName')) or norm(x.get('trackName')) in norm(title)) and x.get('previewUrl')]
             if not xs:
               print('MISS',artist,title);continue
             x=xs[0];fn=f'{slug(artist)}__{slug(title)}.m4a';r=s.get(x['previewUrl'],timeout=60);r.raise_for_status();pathlib.Path('work/audio',fn).write_bytes(r.content)
-            rows.append({'artist':artist,'title':title,'filename':fn,'preview_url':x['previewUrl']})
+            rows.append({'artist':artist,'title':title,'filename':fn,'preview_url':x['previewUrl'],'resolved_title':x.get('trackName')})
           pathlib.Path('work/results/downloaded.json').write_text(json.dumps(rows,indent=2))
           print('DOWNLOADED',len(rows))
           PY
@@ -68,57 +72,36 @@ jobs:
           import json,pathlib,numpy as np,librosa
           from scipy import signal
           rows=json.loads(pathlib.Path('work/results/downloaded.json').read_text())
-          low_t=np.array([1.82,4.20,6.28,8.68])
-          high_t=np.array([2.48,4.78,7.12,9.30])
-          reset_t=np.array([2.78,5.12,7.48])
-          expected=np.array([7.8,9.3,9.2,8.2])
+          low_t=np.array([1.82,4.20,6.28,8.68]); high_t=np.array([2.48,4.78,7.12,9.30]); reset_t=np.array([2.78,5.12,7.48]); expected=np.array([7.8,9.3,9.2,8.2])
           def track(path):
-            y,sr=librosa.load(path,sr=12000,mono=True)
-            sos=signal.butter(4,[120,2200],btype='bandpass',fs=sr,output='sos')
-            y=signal.sosfiltfilt(sos,y); y=librosa.effects.harmonic(y,margin=2.0)
-            f0,voiced,prob=librosa.pyin(y,fmin=librosa.note_to_hz('A2'),fmax=librosa.note_to_hz('C6'),sr=sr,frame_length=2048,hop_length=240,fill_na=np.nan)
-            m=librosa.hz_to_midi(f0);t=librosa.times_like(m,sr=sr,hop_length=240)
-            m[prob<.48]=np.nan
-            return t,m
+            y,sr=librosa.load(path,sr=12000,mono=True); y=signal.sosfiltfilt(signal.butter(4,[120,2200],btype='bandpass',fs=sr,output='sos'),y); y=librosa.effects.harmonic(y,margin=2.0)
+            f0,_,prob=librosa.pyin(y,fmin=librosa.note_to_hz('A2'),fmax=librosa.note_to_hz('C6'),sr=sr,frame_length=2048,hop_length=240,fill_na=np.nan)
+            m=librosa.hz_to_midi(f0);t=librosa.times_like(m,sr=sr,hop_length=240);m[prob<.48]=np.nan;return t,m
           def sample(t,m,x):
-            vals=[]
-            for z in x:
-              use=(t>=z-.12)&(t<=z+.12)&np.isfinite(m)
-              vals.append(float(np.nanmedian(m[use])) if use.sum() else np.nan)
-            return np.array(vals)
+            return np.array([float(np.nanmedian(m[(t>=z-.12)&(t<=z+.12)&np.isfinite(m)])) if ((t>=z-.12)&(t<=z+.12)&np.isfinite(m)).sum() else np.nan for z in x])
           out=[]
           for r in rows:
-            stem=pathlib.Path(r['filename']).stem;v=pathlib.Path('work/separated/htdemucs')/stem/'vocals.wav'
+            v=pathlib.Path('work/separated/htdemucs')/pathlib.Path(r['filename']).stem/'vocals.wav';best=None
             if not v.exists():continue
-            t,m=track(v);best=None
+            t,m=track(v)
             for scale in np.arange(.72,1.36,.025):
               for start in np.arange(0,max(.01,t[-1]-9.5*scale),.05):
-                lows=sample(t,m,start+low_t*scale); highs=sample(t,m,start+high_t*scale); resets=sample(t,m,start+reset_t*scale)
-                jumps=highs-lows
-                available=np.isfinite(jumps)
+                lows=sample(t,m,start+low_t*scale);highs=sample(t,m,start+high_t*scale);resets=sample(t,m,start+reset_t*scale);jumps=highs-lows;available=np.isfinite(jumps)
                 if available.sum()<3:continue
                 good=(jumps>=5.5)&(jumps<=12.5)&available
                 if good.sum()<3:continue
-                reset_drop=highs[:3]-resets
-                rg=np.isfinite(reset_drop)
-                if rg.sum()<2 or np.sum(reset_drop[rg]>=4.5)<2:continue
-                jump_err=float(np.mean(np.abs(jumps[available]-expected[available])))
-                jump_cons=float(np.std(jumps[available]-expected[available]))
-                reset_pen=float(np.mean(np.maximum(0,5.5-reset_drop[rg]))) if rg.any() else 8
-                coverage=float(available.mean())
-                score=jump_err+.35*jump_cons+.55*reset_pen+2.0*(1-coverage)+.8*(4-good.sum())
-                rec={'score':score,'start':float(start),'scale':float(scale),'jumps':[None if not np.isfinite(x) else float(x) for x in jumps],'reset_drops':[None if not np.isfinite(x) else float(x) for x in reset_drop],'coverage':coverage,'good_jumps':int(good.sum())}
+                drops=highs[:3]-resets;rg=np.isfinite(drops)
+                if rg.sum()<2 or np.sum(drops[rg]>=4.5)<2:continue
+                jerr=float(np.mean(np.abs(jumps[available]-expected[available])));score=jerr+.35*float(np.std(jumps[available]-expected[available]))+.55*float(np.mean(np.maximum(0,5.5-drops[rg])))+2*(1-float(available.mean()))+.8*(4-int(good.sum()))
+                rec={'score':score,'start':float(start),'scale':float(scale),'jumps':[None if not np.isfinite(x) else float(x) for x in jumps],'reset_drops':[None if not np.isfinite(x) else float(x) for x in drops],'coverage':float(available.mean()),'good_jumps':int(good.sum())}
                 if best is None or score<best['score']:best=rec
             out.append({**r,'landmark':best or {'score':999,'good_jumps':0}})
-          out.sort(key=lambda x:x['landmark']['score'])
-          pathlib.Path('work/results/landmark_rankings.json').write_text(json.dumps(out,indent=2))
-          pathlib.Path('work/results/landmark_rankings.tsv').write_text('\n'.join(f"{x['landmark']['score']:.4f}\t{x['landmark']['good_jumps']}\t{x['artist']}\t{x['title']}\t{x['landmark'].get('jumps')}\t{x['landmark'].get('reset_drops')}\tstart={x['landmark'].get('start')}\tscale={x['landmark'].get('scale')}" for x in out))
-          print(pathlib.Path('work/results/landmark_rankings.tsv').read_text())
+          out.sort(key=lambda x:x['landmark']['score']);pathlib.Path('work/results/landmark_rankings.json').write_text(json.dumps(out,indent=2));pathlib.Path('work/results/landmark_rankings.tsv').write_text('\n'.join(f"{x['landmark']['score']:.4f}\t{x['landmark']['good_jumps']}\t{x['artist']}\t{x['title']}\t{x['landmark'].get('jumps')}\t{x['landmark'].get('reset_drops')}\tstart={x['landmark'].get('start')}\tscale={x['landmark'].get('scale')}" for x in out));print(pathlib.Path('work/results/landmark_rankings.tsv').read_text())
           PY
       - name: Upload strict results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: strict-vocal-jump-results
+          name: strict-broad-a-results
           path: work/results
           retention-days: 2
