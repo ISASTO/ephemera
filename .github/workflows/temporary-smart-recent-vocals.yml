@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
-          pip install --quiet --upgrade yt-dlp requests numpy scipy librosa demucs soundfile
+          pip install --quiet --upgrade requests numpy scipy librosa demucs soundfile
 
       - name: Recover the full clean whistle
         shell: bash
@@ -41,7 +41,7 @@ jobs:
         env:
           ARTISTS: '["The Marías","Not For Radio","Clairo","Suzy Sheer","Wallice","ggwendolyn","spill tab","daine","Somewhere Special","anna luna","Brothel in Belize","Sarah Kinsley","Oklou","Snow Strippers","Eartheater","Wisp"]'
         run: |
-          python tools/full_vocal_contour_search.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+          python tools/piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
 
       - name: Upload ranked results
         if: always()
