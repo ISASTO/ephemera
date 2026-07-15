@@ -1,0 +1,197 @@
+name: Search Hooktheory symbolic melodies
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy scipy librosa requests
+
+      - name: Download research melody corpus and recover query
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data query results
+          curl -fL --retry 5 -o data/Hooktheory.json.gz 'https://github.com/chrisdonahue/sheetsage-data/raw/refs/heads/main/hooktheory/Hooktheory.json.gz'
+          for n in 00 01 02 03; do
+            curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"
+          done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          ls -lh data/Hooktheory.json.gz query/clean.ogg
+          ffprobe -v error -show_entries format=duration,size -of json query/clean.ogg | tee results/query_probe.json
+
+      - name: Match all symbolic vocal melodies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/search.py <<'PY'
+          import gzip,json,math,pathlib
+          import numpy as np
+          import librosa
+          from scipy import signal
+
+          # Extract the continuous whistled contour only to validate the manually segmented events.
+          y,sr=librosa.load('query/clean.ogg',sr=12000,mono=True)
+          f0,v,p=librosa.pyin(y,fmin=250,fmax=2200,sr=sr,frame_length=2048,hop_length=60,fill_na=np.nan)
+          times=librosa.times_like(f0,sr=sr,hop_length=60); midi=librosa.hz_to_midi(f0)
+          raw={'times':times.tolist(),'midi':[None if not np.isfinite(x) else float(x) for x in midi]}
+          pathlib.Path('results/query_pyin.json').write_text(json.dumps(raw))
+
+          # Segmentation derived from stable plateaus and glides in the clean take.
+          # The first cycle contains a clearer pickup; later cycles compress it. All pitches are
+          # transposition invariant, and the variants deliberately disagree about uncertain notes.
+          variants=[
+            {
+              'name':'full_with_pickups',
+              'pitches':[85,88,85,83,90,93, 85,85,83,90,93, 85,85,83,90,93, 90,92,90,88],
+              'onsets':[0,.20,.40,.95,1.70,2.20, 2.30,2.80,3.35,4.10,4.55, 4.70,5.10,5.70,6.40,6.70, 6.90,7.50,8.00,8.20]
+            },
+            {
+              'name':'three_cells_and_tag',
+              'pitches':[85,83,90,93, 85,83,90,93, 85,83,90,93, 90,92,90,88],
+              'onsets':[0,.95,1.70,2.20, 2.30,3.35,4.10,4.55, 4.70,5.70,6.40,6.70, 6.90,7.50,8.00,8.20]
+            },
+            {
+              'name':'two_cells_and_tag',
+              'pitches':[85,83,90,93, 85,83,90,93, 90,92,90,88],
+              'onsets':[0,1.05,1.80,2.25, 2.40,3.40,4.10,4.45, 4.65,5.25,5.75,5.95]
+            },
+            {
+              'name':'cell_repetition_only',
+              'pitches':[85,83,90,93, 85,83,90,93, 85,83,90,93],
+              'onsets':[0,.95,1.70,2.20, 2.30,3.35,4.10,4.55, 4.70,5.70,6.40,6.70]
+            },
+            {
+              'name':'expanded_cell',
+              'pitches':[85,88,85,83,90,93, 85,88,85,83,90,93, 85,88,85,83,90,93],
+              'onsets':[0,.20,.40,.95,1.70,2.20, 2.30,2.50,2.70,3.35,4.10,4.55, 4.70,4.90,5.10,5.70,6.40,6.70]
+            }
+          ]
+
+          def nearest_interval(x):
+            # Preserve leaps, but correct an occasional octave labeling discrepancy.
+            opts=np.array([x-12,x,x+12],float)
+            return float(opts[np.argmin(np.abs(opts))])
+
+          for q in variants:
+            p=np.array(q['pitches'],float); o=np.array(q['onsets'],float)
+            q['intervals']=np.diff(p)
+            d=np.diff(o); q['durations']=d/np.median(d)
+
+          GAP_Q=1.35   # missing remembered note
+          GAP_C=1.05   # extra annotated syllable
+
+          def alignment_cost(qints,qdurs,cints,cdurs):
+            n,m=len(qints),len(cints)
+            if m<3:return (999,None)
+            # Full query against any candidate substring: leading/trailing candidate intervals are free.
+            prev=np.zeros(m+1,float)
+            starts=np.arange(m+1,dtype=np.int32)
+            back=np.zeros((n+1,m+1),np.int8)
+            for i in range(1,n+1):
+              curr=np.empty(m+1,float); curr[0]=i*GAP_Q
+              for j in range(1,m+1):
+                qi=float(qints[i-1]); ci=float(cints[j-1])
+                # Compare exact leap size, direction, and contour class. Large upward leaps are
+                # strongly diagnostic and cannot be replaced by a small rise cheaply.
+                pitch=min(abs(qi-ci),abs(qi-(ci+12)),abs(qi-(ci-12)))
+                sign=0.0 if (abs(qi)<.75 or abs(ci)<.75 or np.sign(qi)==np.sign(ci)) else 2.0
+                leap=0.0
+                if qi>=5.0:
+                  leap += 2.3 if ci<4.0 else .45*abs(qi-ci)
+                if qi<=-2.0 and ci>-1.0: leap+=1.2
+                rhythm=.34*abs(math.log(max(qdurs[i-1],.12)/max(cdurs[j-1],.12)))
+                sub=prev[j-1]+.42*pitch+sign+leap+rhythm
+                delete=prev[j]+GAP_Q
+                insert=curr[j-1]+GAP_C
+                vals=(sub,delete,insert); k=int(np.argmin(vals)); curr[j]=vals[k];back[i,j]=k
+              prev=curr
+            j=int(np.argmin(prev)); score=float(prev[j]/max(n,1))
+            end=j; i=n
+            matched=[]
+            while i>0 and j>=0:
+              k=int(back[i,j]) if j>0 else 1
+              if k==0:
+                matched.append((i-1,j-1));i-=1;j-=1
+              elif k==1:i-=1
+              else:j-=1
+            start=j
+            return score,{'start_interval':int(start),'end_interval':int(end),'pairs':matched[::-1]}
+
+          def repetition_bonus(cints, start, end):
+            x=np.asarray(cints[max(0,start):min(len(cints),end)],float)
+            # Reward repeated down -> large up -> smaller up cells, but only mildly.
+            hits=0
+            for i in range(len(x)-2):
+              if x[i]<=-1 and x[i+1]>=5 and x[i+2]>=1: hits+=1
+            return min(hits,3)*.13, hits
+
+          with gzip.open('data/Hooktheory.json.gz','rt') as f: data=json.load(f)
+          print('ANNOTATIONS',len(data))
+          rows=[]
+          for key,item in data.items():
+            ann=item.get('annotations') or {}; notes=ann.get('melody') or []
+            if len(notes)<5:continue
+            notes=sorted(notes,key=lambda n:(n.get('onset',0),n.get('offset',0)))
+            # Deduplicate simultaneous duplicate annotations and collapse exact repeated tied notes.
+            events=[]
+            for n in notes:
+              try:pitch=float(n['pitch_class'])+12*float(n.get('octave',0)); onset=float(n['onset'])
+              except Exception:continue
+              if events and abs(onset-events[-1][0])<1e-6:
+                # Keep the higher voice when duplicates appear; TheoryTab melody is normally monophonic.
+                if pitch>events[-1][1]:events[-1]=(onset,pitch)
+              elif events and pitch==events[-1][1] and onset<=events[-1][0]+.08:
+                continue
+              else:events.append((onset,pitch))
+            if len(events)<5:continue
+            cp=np.array([x[1] for x in events],float); co=np.array([x[0] for x in events],float)
+            cints=np.diff(cp)
+            # Normalize occasional octave-wrapped annotation intervals to the nearest musical interval.
+            cints=np.array([nearest_interval(x) for x in cints],float)
+            cd=np.diff(co); med=np.median(cd[cd>0]) if np.any(cd>0) else 1
+            cdurs=np.maximum(cd/med,.08)
+            best=None
+            for q in variants:
+              score,loc=alignment_cost(q['intervals'],q['durations'],cints,cdurs)
+              bonus,hits=repetition_bonus(cints,loc['start_interval'],loc['end_interval'])
+              adjusted=score-bonus
+              rec={'variant':q['name'],'raw_score':score,'score':adjusted,'hits':hits,**loc}
+              if best is None or adjusted<best['score']:best=rec
+            meta=item.get('hooktheory') or {}
+            rows.append({
+              'score':best['score'],'match':best,'id':key,
+              'artist':meta.get('artist'),'song':meta.get('song'),
+              'url':(meta.get('urls') or {}).get('song'),
+              'youtube':(item.get('youtube') or {}).get('url'),
+              'tags':item.get('tags'),
+              'num_events':len(events)
+            })
+          rows.sort(key=lambda r:r['score'])
+          pathlib.Path('results/rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False))
+          lines=[]
+          for i,r in enumerate(rows[:300],1):
+            m=r['match']; lines.append(f"{i}\t{r['score']:.5f}\t{m['variant']}\thits={m['hits']}\t{r['artist']}\t{r['song']}\t{r['url']}\t{r['youtube']}")
+          pathlib.Path('results/top300.tsv').write_text('\n'.join(lines))
+          print('\n'.join(lines[:100]))
+          PY
+          python /tmp/search.py
+
+      - name: Upload symbolic rankings
+        uses: actions/upload-artifact@v4
+        with:
+          name: hooktheory-symbolic-rankings
+          path: results
+          retention-days: 2
