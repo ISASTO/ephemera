@@ -1,0 +1,40 @@
+name: Temporary Piped dream search C
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Install tools and search code
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa demucs soundfile
+          mkdir -p tools query work
+          curl -fL --retry 4 -o tools/full_vocal_contour_search.py https://raw.githubusercontent.com/ISASTO/ephemera/temporary-smart-song-search/tools/full_vocal_contour_search.py
+          curl -fL --retry 4 -o tools/piped_vocal_search_runner.py https://raw.githubusercontent.com/ISASTO/ephemera/temporary-smart-song-search/tools/piped_vocal_search_runner.py
+          touch tools/__init__.py
+          for n in 00 01 02 03; do curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"; done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 query/clean.ogg | cut -d. -f1)" -ge 10
+      - name: Search full vocal catalogs
+        env:
+          ARTISTS: '["Magdalena Bay","Purity Ring","Caroline Polachek","yeule","TOPS","Chromatics","Desire","Ethel Cain"]'
+        run: python tools/piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piped-dream-c-results
+          path: |
+            work/results
+            work/top_vocals
+          retention-days: 2
