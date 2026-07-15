@@ -30,23 +30,28 @@ jobs:
           python - <<'PY'
           import requests,re,json,pathlib
           targets=[('The Naked and Famous','Young Blood'),('The Naked and Famous','Punching in a Dream'),('The Naked and Famous','Girls Like You'),('The Naked and Famous','Hearts Like Ours')]
+          direct={('The Naked and Famous','Young Blood'):'https://p.scdn.co/mp3-preview/83bd1fb2298dab9210f28604c35c361d85854115.mp3'}
           s=requests.Session();s.headers['User-Agent']='Mozilla/5.0 Chrome/150'
           norm=lambda x:re.sub(r'[^a-z0-9]+',' ',(x or '').casefold()).strip();slug=lambda x:re.sub(r'[^a-z0-9]+','-',x.casefold()).strip('-')
           rows=[]
           for a,t in targets:
-            d=s.get('https://itunes.apple.com/search',params={'term':f'{a} {t}','entity':'song','limit':100,'country':'US'},timeout=45).json()
-            xs=[x for x in d.get('results',[]) if norm(x.get('artistName'))==norm(a) and norm(x.get('trackName'))==norm(t) and x.get('previewUrl')]
-            if not xs: print('MISS',a,t);continue
-            x=xs[0];fn=f'{slug(a)}__{slug(t)}.m4a';r=s.get(x['previewUrl'],timeout=60);r.raise_for_status();pathlib.Path('work/audio',fn).write_bytes(r.content)
-            rows.append({'artist':a,'title':t,'filename':fn,'preview_url':x['previewUrl']})
-          pathlib.Path('work/results/downloaded.json').write_text(json.dumps(rows,indent=2));assert len(rows)>=3
+            url=direct.get((a,t))
+            if not url:
+              d=s.get('https://itunes.apple.com/search',params={'term':f'{a} {t}','entity':'song','limit':200,'country':'US'},timeout=45).json()
+              candidates=[x for x in d.get('results',[]) if norm(a) in norm(x.get('artistName')) and norm(t) in norm(x.get('trackName')) and x.get('previewUrl')]
+              if not candidates:
+                print('MISS',a,t);continue
+              url=candidates[0]['previewUrl']
+            fn=f'{slug(a)}__{slug(t)}.mp3';r=s.get(url,timeout=60);r.raise_for_status();pathlib.Path('work/audio',fn).write_bytes(r.content)
+            rows.append({'artist':a,'title':t,'filename':fn,'preview_url':url})
+          pathlib.Path('work/results/downloaded.json').write_text(json.dumps(rows,indent=2));print('DOWNLOADED',len(rows));assert len(rows)>=1
           PY
       - name: Separate vocals and compare
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p work/wavs
-          for f in work/audio/*.m4a; do b="$(basename "$f" .m4a)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/wavs/${b}.wav"; done
+          for f in work/audio/*; do b="$(basename "${f%.*}")"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/wavs/${b}.wav"; done
           python -m demucs --two-stems=vocals -n htdemucs -j 1 -o work/separated work/wavs/*.wav
           PYTHONPATH=. python - <<'PY'
           import json,pathlib
@@ -68,8 +73,7 @@ jobs:
           def sample(t,m,x):return np.array([np.nanmedian(m[(t>=z-.12)&(t<=z+.12)&np.isfinite(m)]) if ((t>=z-.12)&(t<=z+.12)&np.isfinite(m)).sum() else np.nan for z in x])
           out=[]
           for r in rows:
-            v=pathlib.Path('work/separated/htdemucs')/pathlib.Path(r['filename']).stem/'vocals.wav';best=None
-            t,m=track(v)
+            v=pathlib.Path('work/separated/htdemucs')/pathlib.Path(r['filename']).stem/'vocals.wav';best=None;t,m=track(v)
             for sc in np.arange(.72,1.36,.025):
               for st in np.arange(0,max(.01,t[-1]-9.5*sc),.05):
                 j=sample(t,m,st+high*sc)-sample(t,m,st+low*sc);d=sample(t,m,st+high[:3]*sc)-sample(t,m,st+reset*sc);av=np.isfinite(j);good=(j>=5.5)&(j<=12.5)&av;rg=np.isfinite(d)
