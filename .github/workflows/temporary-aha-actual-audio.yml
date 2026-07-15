@@ -10,7 +10,7 @@ permissions:
 jobs:
   recognize:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -27,91 +27,101 @@ jobs:
           echo '3ca25bed926585c470eddae3706d01d4d69d0f9152a0fb077889aebb62c0ecf2  work/clean.ogg' | sha256sum -c -
           ffprobe -v error -show_entries format=duration,size -of json work/clean.ogg | tee results/source-verification.json
 
-      - name: Build controlled WebM microphone variants
+      - name: Build overlapping microphone WAV variants
         shell: bash
         run: |
           set -euo pipefail
-          # AHA's browser microphone sends WebM/Opus. Silence padding mirrors a normal click-then-hum recording.
-          ffmpeg -v error -y -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/original.webm
-          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=0.92,adelay=450,apad=pad_dur=1.0' -t 14 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/slower8.webm
-          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=1.08,adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/faster8.webm
-          ffmpeg -v error -y -i work/clean.ogg -af 'asetrate=48000*0.890899,aresample=48000,atempo=1.122462,adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/down2.webm
-          ffmpeg -v error -y -i work/clean.ogg -af 'asetrate=48000*1.122462,aresample=48000,atempo=0.890899,adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/up2.webm
-          ffmpeg -v error -y -ss 0 -t 8.8 -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 11 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/first9.webm
-          ffmpeg -v error -y -ss 1.5 -t 9.2 -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 11 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/middle9.webm
-          ffmpeg -v error -y -ss 2.5 -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 11 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/last9.webm
-          for f in variants/*.webm; do
-            ffprobe -v error -show_entries format=filename,duration,size -of compact "$f"
-          done | sort | tee results/variant-verification.txt
+          # AHA records roughly ten seconds after the click, so overlapping windows ensure every remembered phrase is tested.
+          ffmpeg -v error -y -i work/clean.ogg -af 'adelay=500,apad=pad_dur=3' -t 14 -ac 1 -ar 44100 -c:a pcm_s16le variants/original.wav
+          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=1.18,adelay=500,apad=pad_dur=3' -t 13 -ac 1 -ar 44100 -c:a pcm_s16le variants/fullfast.wav
+          ffmpeg -v error -y -ss 0 -t 9.3 -i work/clean.ogg -af 'adelay=500,apad=pad_dur=3' -t 13 -ac 1 -ar 44100 -c:a pcm_s16le variants/first.wav
+          ffmpeg -v error -y -ss 1.3 -t 9.4 -i work/clean.ogg -af 'adelay=500,apad=pad_dur=3' -t 13 -ac 1 -ar 44100 -c:a pcm_s16le variants/middle.wav
+          ffmpeg -v error -y -ss 2.2 -i work/clean.ogg -af 'adelay=500,apad=pad_dur=3' -t 13 -ac 1 -ar 44100 -c:a pcm_s16le variants/last.wav
+          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=1.18,asetrate=44100*0.890899,aresample=44100,atempo=1.122462,adelay=500,apad=pad_dur=3' -t 13 -ac 1 -ar 44100 -c:a pcm_s16le variants/down2.wav
+          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=1.18,asetrate=44100*1.122462,aresample=44100,atempo=0.890899,adelay=500,apad=pad_dur=3' -t 13 -ac 1 -ar 44100 -c:a pcm_s16le variants/up2.wav
+          for f in variants/*.wav; do ffprobe -v error -show_entries format=filename,duration,size -of compact "$f"; done | sort | tee results/variant-verification.txt
 
-      - name: Query the humming-recognition endpoint
+      - name: Install Playwright Chromium
+        run: |
+          npm init -y >/dev/null
+          npm install --silent playwright
+          npx playwright install --with-deps chromium
+
+      - name: Submit actual whistle through Chrome MediaRecorder
         shell: bash
         run: |
           set -euo pipefail
-          pip install --quiet requests
-          cat > /tmp/recognize.py <<'PY'
-          import base64, json, pathlib, time
-          import requests
+          cat > run-actual.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const path = require('path');
+          const variants = ['original','fullfast','first','middle','last','down2','up2'];
+          const summary = [];
 
-          endpoint='https://www.doreso.com/humming'
-          headers={
-              'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36',
-              'Accept':'application/json, text/plain, */*',
-              'Content-Type':'application/json',
-              'Origin':'https://www.doreso.com',
-              'Referer':'https://www.doreso.com/',
+          async function recognize(name) {
+            const wav = path.resolve(`variants/${name}.wav`);
+            const browser = await chromium.launch({headless:true,args:[
+              '--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',
+              `--use-file-for-fake-audio-capture=${wav}`,
+              '--autoplay-policy=no-user-gesture-required','--disable-blink-features=AutomationControlled','--no-sandbox'
+            ]});
+            const context = await browser.newContext({viewport:{width:1300,height:900},locale:'en-US'});
+            await context.grantPermissions(['microphone'],{origin:'https://www.doreso.com'});
+            const page = await context.newPage();
+            const record = {variant:name};
+            const network = [];
+            page.on('request',r=>{if(r.url().endsWith('/humming'))network.push({kind:'request',method:r.method(),bytes:(r.postData()||'').length})});
+            try {
+              await page.goto('https://www.doreso.com/',{waitUntil:'networkidle',timeout:90000});
+              await page.getByRole('tab',{name:/HUM\/SING/i}).click({force:true});
+              await page.waitForTimeout(600);
+              const responsePromise = page.waitForResponse(r=>r.url().endsWith('/humming') && r.request().method()==='POST',{timeout:35000});
+              await page.locator('.rf-idle__ring').click({force:true,position:{x:52,y:52}});
+              const response = await responsePromise;
+              record.http_status = response.status();
+              const text = await response.text();
+              record.raw_body = text;
+              try {
+                const body = JSON.parse(text);
+                record.response = body;
+                const d = body && body.data;
+                if (d) {
+                  record.title=d.title;
+                  record.artists=(d.artists||[]).map(a=>a.name);
+                  record.score=d.score;
+                  record.release_date=d.release_date;
+                  record.play_offset_ms=d.play_offset_ms;
+                  record.duration_ms=d.duration_ms;
+                  record.isrc=d.external_ids && d.external_ids.isrc;
+                  record.acrid=d.acrid;
+                  record.result_from=d.result_from;
+                }
+              } catch (_) {}
+              await page.waitForTimeout(800);
+              fs.writeFileSync(`results/${name}-body.txt`,await page.locator('body').innerText());
+            } catch(e) {
+              record.error=String(e);
+              try { fs.writeFileSync(`results/${name}-body.txt`,await page.locator('body').innerText()); } catch(_) {}
+            }
+            record.network=network;
+            summary.push(record);
+            console.log(JSON.stringify({variant:name,title:record.title,artists:record.artists,score:record.score,http_status:record.http_status,error:record.error}));
+            await browser.close();
           }
-          order=['original','slower8','faster8','down2','up2','first9','middle9','last9']
-          rows=[]
-          session=requests.Session()
-          # Establish ordinary site cookies first.
-          try:
-              session.get('https://www.doreso.com/',headers=headers,timeout=30)
-          except Exception:
-              pass
-          for name in order:
-              path=pathlib.Path('variants')/(name+'.webm')
-              payload={'audio':base64.b64encode(path.read_bytes()).decode('ascii')}
-              rec={'variant':name,'bytes':path.stat().st_size}
-              try:
-                  r=session.post(endpoint,headers=headers,json=payload,timeout=90)
-                  rec['http_status']=r.status_code
-                  rec['raw_body']=r.text
-                  try:
-                      body=r.json()
-                  except Exception:
-                      body=None
-                  rec['response']=body
-                  data=(body or {}).get('data') if isinstance(body,dict) else None
-                  if isinstance(data,dict):
-                      rec.update({
-                          'title':data.get('title'),
-                          'artists':[a.get('name') for a in data.get('artists',[]) if isinstance(a,dict)],
-                          'score':data.get('score'),
-                          'release_date':data.get('release_date'),
-                          'duration_ms':data.get('duration_ms'),
-                          'play_offset_ms':data.get('play_offset_ms'),
-                          'isrc':(data.get('external_ids') or {}).get('isrc'),
-                          'acrid':data.get('acrid'),
-                          'result_from':data.get('result_from'),
-                      })
-              except Exception as e:
-                  rec['error']=repr(e)
-              rows.append(rec)
-              print(json.dumps({k:v for k,v in rec.items() if k not in ('raw_body','response')},ensure_ascii=False))
-              time.sleep(1.5)
-          pathlib.Path('results/responses.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
-          pathlib.Path('results/summary.tsv').write_text('\n'.join(
-              f"{r.get('variant')}\t{r.get('score')}\t{','.join(r.get('artists') or [])}\t{r.get('title')}\t{r.get('release_date')}\t{r.get('play_offset_ms')}\t{r.get('http_status')}"
-              for r in rows),encoding='utf-8')
-          PY
-          python /tmp/recognize.py | tee results/console-results.txt
+
+          (async()=>{
+            for(const v of variants) await recognize(v);
+            fs.writeFileSync('results/responses.json',JSON.stringify(summary,null,2));
+            fs.writeFileSync('results/summary.tsv',summary.map(r=>`${r.variant}\t${r.score??''}\t${(r.artists||[]).join(',')}\t${r.title||''}\t${r.release_date||''}\t${r.play_offset_ms??''}\t${r.http_status??''}\t${r.error||''}`).join('\n'));
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          NODE_PATH="$PWD/node_modules" node run-actual.js | tee results/console-results.txt
           cat results/summary.tsv
 
-      - name: Upload recognition evidence
+      - name: Upload actual-whistle evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aha-actual-audio-results
+          name: aha-actual-browser-results
           path: results
           retention-days: 1
