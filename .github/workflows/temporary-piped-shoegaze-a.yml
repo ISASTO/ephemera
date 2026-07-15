@@ -28,7 +28,7 @@ jobs:
       - name: Search full vocal catalogs
         env:
           ARTISTS: '["Night Tapes","Wisp","Glixen","swim school","Pale Waves","No Vacation","Yumi Zouma","Still Corners"]'
-        run: python tools/piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+        run: PYTHONPATH=. python -m tools.piped_vocal_search_runner --artists-json "$ARTISTS" --query query/clean.ogg --work work
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
