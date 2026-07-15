@@ -1,0 +1,55 @@
+name: Smart guitar-dream vocal search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  guitar-vocals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install audio and analysis tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet --upgrade yt-dlp requests numpy scipy librosa demucs soundfile
+
+      - name: Recover the full clean whistle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p query work
+          for n in 00 01 02 03; do
+            curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"
+          done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          ffprobe -v error -show_entries format=duration,size -of json query/clean.ogg | tee query/probe.json
+          python - <<'PY'
+          import json
+          d=json.load(open('query/probe.json'))['format']
+          assert float(d['duration']) > 10.0, d
+          PY
+
+      - name: Search full guitar-led dream-indie catalogs
+        env:
+          ARTISTS: '["NewDad","Pearly Drops","Slow Pulp","Hatchie","Fazerdaze","Momma","Crumb","Alvvays","Blondshell","Softcult","julie","bôa","Wolf Alice","Soccer Mommy","Snail Mail","Just Mustard","Men I Trust","The Japanese House","Cults","Beach House"]'
+        run: |
+          python tools/full_vocal_contour_search.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+
+      - name: Upload ranked results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-guitar-vocal-results
+          path: |
+            query/probe.json
+            work/results
+            work/top_vocals
+          retention-days: 2
