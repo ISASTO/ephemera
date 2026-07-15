@@ -1,0 +1,57 @@
+name: Probe Hooktheory public API
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir results
+          python - <<'PY'
+          import json, pathlib, requests, urllib.parse
+          base='https://api.hooktheory.com/v1/songs/public'
+          tests=[
+            ('root',{}),
+            ('fields',{'fields':'ID,song,jsonData'}),
+            ('limit',{'limit':5,'fields':'ID,song'}),
+            ('page',{'page':1,'limit':5,'fields':'ID,song'}),
+            ('skiptop',{'$top':5,'$skip':0,'fields':'ID,song'}),
+            ('offset',{'offset':0,'count':5,'fields':'ID,song'}),
+            ('search_marias',{'song':'The Marías','fields':'ID,song,jsonData'}),
+            ('q_marias',{'q':'The Marías','fields':'ID,song'}),
+            ('filter',{'filter':'The Marías','fields':'ID,song'}),
+            ('query',{'query':'The Marías','fields':'ID,song'}),
+          ]
+          s=requests.Session();s.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36';s.headers['Accept']='application/json'
+          report=[]
+          for name,params in tests:
+            try:
+              r=s.get(base,params=params,timeout=45)
+              body=r.text
+              pathlib.Path(f'results/{name}.txt').write_text(body)
+              report.append({'name':name,'url':r.url,'status':r.status_code,'content_type':r.headers.get('content-type'),'length':len(body),'headers':dict(r.headers),'prefix':body[:1000]})
+              print(name,r.status_code,len(body),r.url,body[:300].replace('\n',' '))
+            except Exception as e:
+              report.append({'name':name,'error':repr(e)})
+          # Probe related pages and OPTIONS.
+          for path in ['', '/', '/count', '/search', '/songs']:
+            try:
+              r=s.options(base+path,timeout=30)
+              report.append({'name':'OPTIONS'+path,'status':r.status_code,'headers':dict(r.headers),'body':r.text[:1000]})
+            except Exception as e: report.append({'name':'OPTIONS'+path,'error':repr(e)})
+          pathlib.Path('results/report.json').write_text(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hooktheory-api-probe
+          path: results
+          retention-days: 1
