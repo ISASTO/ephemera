@@ -1,0 +1,162 @@
+name: Temporary AHA synthetic hum search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Generate whistle waveforms from measured recording
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy
+          mkdir -p query results
+          cat > /tmp/synth.py <<'PY'
+          import math, wave
+          import numpy as np
+
+          # Dense pitch anchors measured from the clean take. Time values are seconds.
+          anchors=np.array([
+            [0.00,83.2],[0.14,84.1],[0.28,84.8],[0.50,85.5],
+            [1.05,85.0],[1.55,85.1],[2.00,85.0],[2.48,89.2],[2.64,90.0],[2.95,93.0],
+            [3.38,85.1],[4.10,85.1],[4.98,85.0],[5.15,83.8],[5.32,83.1],[6.10,83.3],
+            [6.23,89.5],[6.37,90.1],[6.58,91.9],[6.90,92.7],
+            [7.38,85.6],[8.10,85.0],[8.98,84.5],[9.15,83.3],[10.23,83.3],
+            [10.37,90.3],[10.62,90.8],[10.98,92.8],
+            [11.26,84.9],[12.10,85.1],[12.98,84.8],[13.15,83.7],[14.10,83.4],
+            [14.25,90.3],[14.48,91.4],[14.72,92.7],[14.92,91.0],[15.15,90.5],[15.58,90.2],
+            [16.25,90.9],[16.52,91.3],[16.68,92.5],[16.98,90.7],[17.28,90.3],[17.52,87.9]
+          ],float)
+
+          def render(name, semitones=0.0, tempo=1.0):
+            sr=44100
+            # Compress to a 15-second microphone window while retaining a short lead-in.
+            t_anchor=0.55+anchors[:,0]*tempo
+            duration=min(17.5,t_anchor[-1]+1.0)
+            n=int(duration*sr)
+            t=np.arange(n)/sr
+            midi=np.interp(t,t_anchor,anchors[:,1]+semitones,left=anchors[0,1]+semitones,right=anchors[-1,1]+semitones)
+            # Smooth glides. A light vibrato and harmonic give the recognizer a natural humming/whistle timbre.
+            freq=440.0*2**((midi-69.0)/12.0)
+            vibrato=1.0+0.0025*np.sin(2*np.pi*5.2*t)
+            phase=2*np.pi*np.cumsum(freq*vibrato)/sr
+            y=0.56*np.sin(phase)+0.16*np.sin(2*phase+0.2)+0.055*np.sin(3*phase+0.7)
+            # Gate around the first and last anchor, with small phrase breaths at major resets.
+            env=np.ones_like(t)
+            env*=np.clip((t-0.45)/0.10,0,1)
+            env*=np.clip((duration-t)/0.30,0,1)
+            for center in [3.80,7.80,11.70,14.70]:
+              c=0.55+center*tempo
+              env*=1.0-0.45*np.exp(-0.5*((t-c)/0.055)**2)
+            y*=env
+            y+=0.004*np.random.default_rng(4).normal(size=n)*env
+            y=np.tanh(1.15*y)
+            pcm=np.int16(np.clip(y,-1,1)*32767)
+            with wave.open(f'query/{name}.wav','wb') as w:
+              w.setnchannels(1);w.setsampwidth(2);w.setframerate(sr);w.writeframes(pcm.tobytes())
+
+          render('base',0,0.78)
+          render('lower3',-3,0.78)
+          render('upper3',3,0.78)
+          render('slower',0,0.88)
+          PY
+          python /tmp/synth.py
+          for f in query/*.wav; do ffprobe -v error -show_entries format=duration,size -of compact "$f"; done | tee results/query-info.txt
+
+      - name: Install browser
+        run: |
+          npm init -y >/dev/null
+          npm install --silent playwright
+          npx playwright install --with-deps chromium
+
+      - name: Use AHA humming recognition
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/run.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const path = require('path');
+          const variants=['base','lower3','upper3','slower'];
+          fs.mkdirSync('results',{recursive:true});
+
+          async function clickFirst(loc) {
+            try {
+              const n=await loc.count();
+              for(let i=0;i<Math.min(n,10);i++){
+                const x=loc.nth(i);
+                if(await x.isVisible({timeout:1000})) { await x.click({force:true,timeout:5000}); return true; }
+              }
+            } catch(e) {}
+            return false;
+          }
+
+          async function one(name){
+            const dir=`results/${name}`; fs.mkdirSync(dir,{recursive:true});
+            const browser=await chromium.launch({headless:true,args:[
+              '--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',
+              `--use-file-for-fake-audio-capture=${path.resolve(`query/${name}.wav`)}`,
+              '--autoplay-policy=no-user-gesture-required','--disable-blink-features=AutomationControlled','--no-sandbox'
+            ]});
+            const context=await browser.newContext({viewport:{width:1440,height:1100},locale:'en-US'});
+            await context.grantPermissions(['microphone'],{origin:'https://www.doreso.com'});
+            const page=await context.newPage();
+            const log=[];
+            page.on('console',m=>log.push({kind:'console',type:m.type(),text:m.text()}));
+            page.on('pageerror',e=>log.push({kind:'pageerror',text:String(e)}));
+            page.on('request',r=>{
+              if(/api|hum|record|recogn|audio|upload|acr/i.test(r.url())) log.push({kind:'request',method:r.method(),url:r.url(),post:(r.postData()||'').slice(0,2000)});
+            });
+            page.on('response',async r=>{
+              if(/api|hum|record|recogn|audio|upload|acr/i.test(r.url())){
+                let body='';try{const ct=(r.headers()['content-type']||'');if(/json|text/i.test(ct))body=(await r.text()).slice(0,30000);}catch(e){}
+                log.push({kind:'response',status:r.status(),url:r.url(),body});
+              }
+            });
+            try{
+              await page.goto('https://www.doreso.com/',{waitUntil:'networkidle',timeout:90000});
+              await page.waitForTimeout(2500);
+              await page.screenshot({path:`${dir}/loaded.png`,fullPage:true});
+              fs.writeFileSync(`${dir}/loaded.txt`,await page.locator('body').innerText());
+              fs.writeFileSync(`${dir}/loaded.html`,await page.content());
+              fs.writeFileSync(`${dir}/controls.json`,JSON.stringify(await page.locator('button,[role=button],label,input,[class*=toggle]').evaluateAll(es=>es.map((e,i)=>({i,tag:e.tagName,text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim(),aria:e.getAttribute('aria-label'),title:e.getAttribute('title'),id:e.id,cls:String(e.className)}))),null,2));
+              await clickFirst(page.getByRole('button',{name:/accept|agree|allow/i}));
+              const mode=await clickFirst(page.getByText(/HUM\s*\/\s*SING/i,{exact:false})) || await clickFirst(page.getByRole('button',{name:/hum|sing/i})) || await clickFirst(page.locator('[data-mode*=hum i],[id*=hum i],[class*=hum i]'));
+              log.push({kind:'mode',clicked:mode});
+              await page.waitForTimeout(800);
+              const rec=await clickFirst(page.getByText(/Tap to Record|Record Now|Start Recording|Click to Record/i,{exact:false})) || await clickFirst(page.getByRole('button',{name:/record|microphone|start/i})) || await clickFirst(page.locator('[aria-label*=record i],[title*=record i],[id*=record i],[class*=record i]'));
+              log.push({kind:'record',clicked:rec});
+              await page.screenshot({path:`${dir}/record-clicked.png`,fullPage:true});
+              for(let i=0;i<18;i++){
+                await page.waitForTimeout(2000);
+                const text=await page.locator('body').innerText();
+                fs.writeFileSync(`${dir}/state-${String((i+1)*2).padStart(2,'0')}.txt`,text);
+                log.push({kind:'body',sec:(i+1)*2,text:text.slice(0,10000)});
+              }
+              await page.screenshot({path:`${dir}/final.png`,fullPage:true});
+              fs.writeFileSync(`${dir}/final.html`,await page.content());
+            }catch(e){log.push({kind:'fatal',text:String(e),stack:e.stack});try{await page.screenshot({path:`${dir}/fatal.png`,fullPage:true});}catch(_){} }
+            fs.writeFileSync(`${dir}/events.json`,JSON.stringify(log,null,2));
+            await browser.close();
+          }
+          (async()=>{for(const v of variants)await one(v)})().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          node /tmp/run.js
+          find results -type f -printf '%p %s\n' | sort
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aha-synthetic-results
+          path: results
+          retention-days: 1
