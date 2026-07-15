@@ -1,0 +1,80 @@
+name: Temporary AHA segment-consensus search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  consensus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover full whistle and create independent query segments
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          mkdir -p query results
+          cat temporary-query/chunk_00.b64 temporary-query/chunk_01.b64 temporary-query/chunk_02.b64 temporary-query/chunk_03.b64 > query/source.b64
+          base64 --decode --ignore-garbage query/source.b64 > query/source.ogg || true
+          duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 query/source.ogg)"
+          python - "$duration" <<'PY'
+          import sys
+          assert float(sys.argv[1]) > 10
+          PY
+          ffprobe -v error -show_entries format=duration,size -of json query/source.ogg > results/source.json
+
+          # Independent portions, padded for the fake microphone.
+          ffmpeg -v error -y -ss 0.0 -t 8.1 -i query/source.ogg -af 'adelay=700,apad=pad_dur=7' -t 18 -ar 44100 -ac 1 -c:a pcm_s16le query/first_two_cycles.wav
+          ffmpeg -v error -y -ss 4.4 -t 7.0 -i query/source.ogg -af 'adelay=700,apad=pad_dur=7' -t 18 -ar 44100 -ac 1 -c:a pcm_s16le query/late_phrase.wav
+          ffmpeg -v error -y -ss 1.2 -t 9.6 -i query/source.ogg -af 'adelay=700,apad=pad_dur=7' -t 18 -ar 44100 -ac 1 -c:a pcm_s16le query/centered_phrase.wav
+
+          # Loop only the repeated skeleton so the database gets several clean examples.
+          ffmpeg -v error -y -ss 0.0 -t 2.45 -i query/source.ogg -ar 44100 -ac 1 query/cycle.wav
+          printf "file '%s/query/cycle.wav'\nfile '%s/query/cycle.wav'\nfile '%s/query/cycle.wav'\nfile '%s/query/cycle.wav'\n" "$PWD" "$PWD" "$PWD" "$PWD" > query/cycle-list.txt
+          ffmpeg -v error -y -f concat -safe 0 -i query/cycle-list.txt -af 'adelay=700,apad=pad_dur=6' -t 18 -ar 44100 -ac 1 -c:a pcm_s16le query/cycle_loop.wav
+
+          ffmpeg -v error -y -ss 0.0 -t 4.8 -i query/source.ogg -ar 44100 -ac 1 query/two.wav
+          printf "file '%s/query/two.wav'\nfile '%s/query/two.wav'\n" "$PWD" "$PWD" > query/two-list.txt
+          ffmpeg -v error -y -f concat -safe 0 -i query/two-list.txt -af 'adelay=700,apad=pad_dur=6' -t 18 -ar 44100 -ac 1 -c:a pcm_s16le query/two_cycles_loop.wav
+          for f in query/*.wav; do ffprobe -v error -show_entries format=duration,size -of compact "$f"; done > results/queries.txt
+
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null
+          npm install --silent playwright
+          npx playwright install --with-deps chromium
+
+      - name: Search each independent segment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/segments.js <<'JS'
+          const { chromium }=require('playwright');
+          const fs=require('fs'),path=require('path');
+          const names=['first_two_cycles','late_phrase','centered_phrase','cycle_loop','two_cycles_loop'];
+          const origin='https://www.doreso.com';fs.mkdirSync('results',{recursive:true});
+          async function run(name){
+            const dir=`results/${name}`;fs.mkdirSync(dir,{recursive:true});const events=[];
+            const browser=await chromium.launch({headless:true,args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${path.resolve(`query/${name}.wav`)}`,'--autoplay-policy=no-user-gesture-required','--no-sandbox']});
+            const ctx=await browser.newContext({viewport:{width:1400,height:1000},userAgent:'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'});await ctx.grantPermissions(['microphone'],{origin});const page=await ctx.newPage();
+            try{await page.goto(origin,{waitUntil:'networkidle',timeout:90000});await page.waitForTimeout(1800);await page.getByRole('tab',{name:/HUM\/SING/i}).click({force:true});await page.waitForTimeout(500);await page.locator('.rf-idle__ring').click({force:true,position:{x:50,y:50}});for(let i=0;i<24;i++){await page.waitForTimeout(1500);events.push({sec:(i+1)*1.5,text:(await page.locator('body').innerText()).slice(0,12000)});}fs.writeFileSync(`${dir}/final.txt`,await page.locator('body').innerText());await page.screenshot({path:`${dir}/final.png`,fullPage:true});}catch(e){events.push({fatal:String(e)});try{await page.screenshot({path:`${dir}/fatal.png`,fullPage:true})}catch(_){}}
+            fs.writeFileSync(`${dir}/events.json`,JSON.stringify(events,null,2));await ctx.close();await browser.close();
+          }
+          (async()=>{for(const n of names)await run(n)})().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          NODE_PATH="$PWD/node_modules" node /tmp/segments.js
+          for f in results/*/final.txt; do echo "===== $f ====="; sed -n '1,35p' "$f"; done | tee results/summary.txt
+
+      - name: Upload segment-consensus results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aha-segment-consensus
+          path: results
+          retention-days: 1
