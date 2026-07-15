@@ -1,0 +1,189 @@
+name: Temporary AHA hum search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  hum-search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare cleaned microphone audio variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          mkdir -p query results
+          base64 -d temporary-query/clean_harmonic.ogg.b64 > query/clean.ogg
+          # Chrome's fake microphone input is most reliable with mono 16-bit PCM WAV.
+          ffmpeg -v error -y -i query/clean.ogg -af 'adelay=700,apad=pad_dur=5' -t 17 -ac 1 -ar 44100 -c:a pcm_s16le query/clean.wav
+          ffmpeg -v error -y -i query/clean.ogg -af 'asetrate=44100*0.943,aresample=44100,adelay=700,apad=pad_dur=5' -t 17 -ac 1 -ar 44100 -c:a pcm_s16le query/slower.wav
+          ffmpeg -v error -y -i query/clean.ogg -af 'asetrate=44100*1.060,aresample=44100,adelay=700,apad=pad_dur=5' -t 17 -ac 1 -ar 44100 -c:a pcm_s16le query/faster.wav
+          ffmpeg -v error -y -i query/clean.ogg -af 'rubberband=pitch=0.890899,adelay=700,apad=pad_dur=5' -t 17 -ac 1 -ar 44100 -c:a pcm_s16le query/down2.wav || cp query/clean.wav query/down2.wav
+          ffmpeg -v error -y -i query/clean.ogg -af 'rubberband=pitch=1.122462,adelay=700,apad=pad_dur=5' -t 17 -ac 1 -ar 44100 -c:a pcm_s16le query/up2.wav || cp query/clean.wav query/up2.wav
+          ls -lh query
+
+      - name: Install Playwright Chromium
+        run: |
+          npm init -y >/dev/null
+          npm install --silent playwright
+          npx playwright install --with-deps chromium
+
+      - name: Submit audio to AHA Hum mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/aha.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const path = require('path');
+
+          const variants = ['clean', 'slower', 'faster', 'down2', 'up2'];
+          const origin = 'https://www.doreso.com';
+          fs.mkdirSync('results', { recursive: true });
+
+          function safe(s) {
+            return String(s || '').replace(/[^a-z0-9_.-]+/gi, '_').slice(0, 120);
+          }
+
+          async function tryClick(locator) {
+            try {
+              if (await locator.count()) {
+                const first = locator.first();
+                if (await first.isVisible({ timeout: 1500 })) {
+                  await first.click({ timeout: 5000, force: true });
+                  return true;
+                }
+              }
+            } catch (_) {}
+            return false;
+          }
+
+          async function runVariant(name) {
+            const wav = path.resolve(`query/${name}.wav`);
+            const dir = `results/${name}`;
+            fs.mkdirSync(dir, { recursive: true });
+            const browser = await chromium.launch({
+              headless: true,
+              args: [
+                '--use-fake-ui-for-media-stream',
+                '--use-fake-device-for-media-stream',
+                `--use-file-for-fake-audio-capture=${wav}`,
+                '--autoplay-policy=no-user-gesture-required',
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox'
+              ]
+            });
+            const context = await browser.newContext({
+              locale: 'en-US',
+              viewport: { width: 1440, height: 1100 },
+              userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+            });
+            await context.grantPermissions(['microphone'], { origin });
+            const page = await context.newPage();
+            const events = [];
+            page.on('console', msg => events.push({ type: 'console', level: msg.type(), text: msg.text() }));
+            page.on('pageerror', err => events.push({ type: 'pageerror', text: String(err) }));
+            page.on('request', req => {
+              const u = req.url();
+              if (/acr|recogn|record|hum|audio|upload|api/i.test(u)) {
+                events.push({ type: 'request', method: req.method(), url: u, postData: (req.postData() || '').slice(0, 1000) });
+              }
+            });
+            page.on('response', async res => {
+              const u = res.url();
+              if (/acr|recogn|record|hum|audio|upload|api/i.test(u)) {
+                let body = '';
+                try {
+                  const ct = (res.headers()['content-type'] || '').toLowerCase();
+                  if (/json|text|javascript/.test(ct)) body = (await res.text()).slice(0, 10000);
+                } catch (_) {}
+                events.push({ type: 'response', status: res.status(), url: u, body });
+              }
+            });
+
+            try {
+              await page.goto(origin + '/', { waitUntil: 'networkidle', timeout: 90000 });
+              await page.waitForTimeout(2500);
+              await page.screenshot({ path: `${dir}/00-loaded.png`, fullPage: true });
+              fs.writeFileSync(`${dir}/00-body.txt`, await page.locator('body').innerText());
+              fs.writeFileSync(`${dir}/00-html.html`, await page.content());
+              const buttons = await page.locator('button, [role="button"], input, label').evaluateAll(els => els.map((e, i) => ({
+                i, tag: e.tagName, text: (e.innerText || e.value || e.getAttribute('aria-label') || '').trim(),
+                aria: e.getAttribute('aria-label'), title: e.getAttribute('title'), cls: e.className
+              })));
+              fs.writeFileSync(`${dir}/00-controls.json`, JSON.stringify(buttons, null, 2));
+
+              // Dismiss common consent overlays if present.
+              await tryClick(page.getByRole('button', { name: /accept|agree|allow all/i }));
+              await tryClick(page.locator('button:has-text("Accept")'));
+
+              // Select explicit humming/singing mode. Try multiple semantic and text forms.
+              let modeClicked = false;
+              for (const loc of [
+                page.getByText(/HUM\s*\/\s*SING/i, { exact: false }),
+                page.getByRole('button', { name: /hum|sing/i }),
+                page.locator('[data-mode*="hum" i], [class*="hum" i], [id*="hum" i]')
+              ]) {
+                if (await tryClick(loc)) { modeClicked = true; break; }
+              }
+              events.push({ type: 'state', modeClicked });
+              await page.waitForTimeout(1000);
+              await page.screenshot({ path: `${dir}/01-hum-mode.png`, fullPage: true });
+              fs.writeFileSync(`${dir}/01-body.txt`, await page.locator('body').innerText());
+
+              let recordClicked = false;
+              for (const loc of [
+                page.getByText(/Tap to Record|Record Now|Start Recording|Click to Record/i, { exact: false }),
+                page.getByRole('button', { name: /record|microphone|start/i }),
+                page.locator('[aria-label*="record" i], [title*="record" i], [class*="record" i], [id*="record" i]')
+              ]) {
+                if (await tryClick(loc)) { recordClicked = true; break; }
+              }
+              events.push({ type: 'state', recordClicked });
+              await page.waitForTimeout(2200);
+              await page.screenshot({ path: `${dir}/02-recording.png`, fullPage: true });
+
+              // The site normally auto-submits after roughly 15 seconds. Capture state throughout.
+              for (let sec = 4; sec <= 30; sec += 2) {
+                await page.waitForTimeout(2000);
+                const text = await page.locator('body').innerText();
+                fs.writeFileSync(`${dir}/state-${String(sec).padStart(2, '0')}.txt`, text);
+                events.push({ type: 'body', sec, text: text.slice(0, 5000) });
+                if (/result|match|identified|no song|not found|try again|spotify|apple music|deezer/i.test(text) && sec >= 14) {
+                  await page.screenshot({ path: `${dir}/result-${sec}.png`, fullPage: true });
+                }
+              }
+              await page.screenshot({ path: `${dir}/99-final.png`, fullPage: true });
+              fs.writeFileSync(`${dir}/99-body.txt`, await page.locator('body').innerText());
+              fs.writeFileSync(`${dir}/99-html.html`, await page.content());
+            } catch (e) {
+              events.push({ type: 'fatal', text: String(e), stack: e.stack });
+              try { await page.screenshot({ path: `${dir}/fatal.png`, fullPage: true }); } catch (_) {}
+            } finally {
+              fs.writeFileSync(`${dir}/events.json`, JSON.stringify(events, null, 2));
+              await context.close();
+              await browser.close();
+            }
+          }
+
+          (async () => {
+            for (const v of variants) await runVariant(v);
+          })().catch(e => { console.error(e); process.exit(1); });
+          JS
+          node /tmp/aha.js
+          find results -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload AHA humming search evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: aha-hum-search-results
+          path: results
+          retention-days: 1
