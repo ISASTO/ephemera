@@ -1,0 +1,192 @@
+name: Temporary large MIDI melody search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Install MIDI tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git
+          pip install --quiet mido numpy
+          mkdir -p work/results work/top_midis
+
+      - name: Sparse-clone pop and rock MIDI corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/nightingale-ai/midi-data.git corpus
+          cd corpus
+          git sparse-checkout set rock pop poprock
+          echo "MIDI files: $(find rock pop poprock -type f \( -iname '*.mid' -o -iname '*.midi' \) | wc -l)"
+
+      - name: Search for four evenly spaced vocal-like rises
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, pathlib, shutil, statistics
+          from collections import defaultdict
+          import mido, numpy as np
+
+          roots=[pathlib.Path('corpus/rock'),pathlib.Path('corpus/pop'),pathlib.Path('corpus/poprock')]
+          files=[]
+          for root in roots:
+              if root.exists(): files += list(root.rglob('*.mid')) + list(root.rglob('*.midi'))
+          print('SCANNING',len(files))
+
+          voice_words=('vocal','voice','melody','lead','vox','sing','soprano','alto','choir')
+          bad_words=('drum','percussion','bass','kick','snare')
+
+          def clean_text(s):
+              return ''.join(ch if ch.isprintable() else ' ' for ch in str(s)).strip()
+
+          def track_events(mid, track):
+              tick=0; active={}; notes=[]; texts=[]; programs={}; channels=set()
+              for msg in track:
+                  tick += msg.time
+                  if msg.is_meta:
+                      if msg.type in ('track_name','text','copyright','marker','cue_marker','lyrics','instrument_name'):
+                          value=getattr(msg,'name',None) or getattr(msg,'text',None) or ''
+                          value=clean_text(value)
+                          if value and value not in texts: texts.append(value)
+                      continue
+                  if hasattr(msg,'channel'): channels.add(msg.channel)
+                  if msg.type=='program_change': programs[msg.channel]=msg.program
+                  if msg.type=='note_on' and msg.velocity>0 and msg.channel!=9:
+                      active[(msg.channel,msg.note)]=tick
+                  elif (msg.type=='note_off' or (msg.type=='note_on' and msg.velocity==0)) and msg.channel!=9:
+                      key=(msg.channel,msg.note)
+                      if key in active:
+                          st=active.pop(key); dur=max(1,tick-st)
+                          notes.append((st/mid.ticks_per_beat,tick/mid.ticks_per_beat,msg.note,msg.channel,dur/mid.ticks_per_beat))
+              return notes,texts,programs,channels
+
+          def reduce_melody(notes, choose_high=True):
+              if len(notes)<20:return None
+              groups=defaultdict(list)
+              for st,en,p,ch,dur in notes:
+                  # Quantize only enough to merge true MIDI chords.
+                  groups[round(st,4)].append((p,en,dur,ch))
+              seq=[]
+              for st in sorted(groups):
+                  g=groups[st]
+                  p,en,dur,ch=(max(g,key=lambda z:z[0]) if choose_high else min(g,key=lambda z:z[0]))
+                  seq.append((float(st),float(p),float(dur),int(ch),len(g)))
+              if len(seq)<18:return None
+              # Remove immediate duplicate attacks and absurd ornament density.
+              out=[]
+              for x in seq:
+                  if out and x[0]-out[-1][0]<0.055 and x[1]==out[-1][1]:continue
+                  out.append(x)
+              return out
+
+          def score_sequence(seq, name_hint, programs):
+              t=np.array([x[0] for x in seq]); p=np.array([x[1] for x in seq]); chord=np.array([x[4] for x in seq])
+              span=max(.001,t[-1]-t[0]); density=len(t)/span
+              if density<.18 or density>14:return []
+              rises=[]
+              for i in range(1,len(t)):
+                  # Compare high note against both previous attack and median of the preceding 1.25 beats.
+                  lo=np.searchsorted(t,t[i]-1.25)
+                  prev=p[max(0,i-1)]
+                  med=float(np.median(p[lo:i])) if i>lo else prev
+                  baseline=min(prev,med)
+                  jump=p[i]-baseline
+                  dt=t[i]-t[i-1]
+                  if 5.0<=jump<=13.5 and .03<=dt<=1.75:
+                      # Find a downward reset within 1.8 beats.
+                      j1=np.searchsorted(t,t[i]+.12);j2=np.searchsorted(t,t[i]+1.8)
+                      reset=float(p[i]-np.min(p[j1:j2])) if j2>j1 else 0.0
+                      rises.append({'i':i,'time':float(t[i]),'jump':float(jump),'reset':reset,'pitch':float(p[i])})
+              if len(rises)<4:return []
+              results=[]
+              # Consecutive large-rise events are the most melody-like. Also allow one stray rise between targets.
+              for a in range(len(rises)-3):
+                  for skips in ((0,1,2,3),(0,1,2,4),(0,1,3,4),(0,2,3,4)):
+                      ids=[a+s for s in skips]
+                      if ids[-1]>=len(rises):continue
+                      rr=[rises[k] for k in ids]; times=np.array([x['time'] for x in rr]); gaps=np.diff(times)
+                      period=float(np.median(gaps))
+                      if not 2.0<=period<=7.0:continue
+                      spacing=float(np.mean(np.abs(gaps-period))/period)
+                      if spacing>.30:continue
+                      jumps=np.array([x['jump'] for x in rr]); resets=np.array([x['reset'] for x in rr[:3]])
+                      good_resets=int(np.sum(resets>=4.0))
+                      if good_resets<2:continue
+                      jump_err=float(np.mean(np.abs(jumps-8.7)))
+                      jump_cons=float(np.std(jumps))
+                      reset_pen=float(np.mean(np.maximum(0,5.5-resets)))
+                      # After the fourth peak, reward a high-register tag that descends several semitones.
+                      i4=rr[-1]['i']; end=np.searchsorted(t,t[i4]+3.5); tail=p[i4:end]
+                      tail_drop=float(p[i4]-tail[-1]) if len(tail)>=3 else 0.0
+                      tail_pen=0.0 if 1.5<=tail_drop<=8.0 else min(4.0,abs(tail_drop-4.0)*.35)
+                      text=' '.join(name_hint).casefold()
+                      name_bonus=-.45 if any(w in text for w in voice_words) else 0.0
+                      bad_pen=.8 if any(w in text for w in bad_words) else 0.0
+                      progs=list(programs.values())
+                      voice_prog=any(52<=q<=85 for q in progs)
+                      prog_bonus=-.20 if voice_prog else 0.0
+                      chord_pen=float(np.mean(np.maximum(0,chord[[x['i'] for x in rr]]-1)))*.18
+                      density_pen=max(0,density-5)*.08
+                      score=1.45*spacing+0.42*jump_err+0.18*jump_cons+0.42*reset_pen+0.12*tail_pen+bad_pen+chord_pen+density_pen+name_bonus+prog_bonus
+                      results.append({'score':float(score),'period_beats':period,'spacing_error':spacing,'jumps':jumps.tolist(),'resets':resets.tolist(),'tail_drop':tail_drop,'high_times':times.tolist(),'high_pitches':[x['pitch'] for x in rr],'density':density,'good_resets':good_resets})
+              return sorted(results,key=lambda x:x['score'])[:2]
+
+          all_rows=[]; errors=0
+          for n,path in enumerate(files,1):
+              try:
+                  mid=mido.MidiFile(path,clip=True)
+                  global_text=[]
+                  for tr in mid.tracks:
+                      for msg in tr:
+                          if msg.is_meta and msg.type in ('track_name','text','copyright','marker'):
+                              val=clean_text(getattr(msg,'name',None) or getattr(msg,'text',None) or '')
+                              if val and val not in global_text:global_text.append(val)
+                  for ti,tr in enumerate(mid.tracks):
+                      notes,texts,programs,channels=track_events(mid,tr)
+                      hint=(global_text[:12]+texts[:12])
+                      for mode in ('high','low'):
+                          seq=reduce_melody(notes,choose_high=(mode=='high'))
+                          if seq is None:continue
+                          matches=score_sequence(seq,hint,programs)
+                          for m in matches:
+                              all_rows.append({**m,'path':str(path),'file':path.name,'track_index':ti,'mode':mode,'track_text':texts[:20],'global_text':global_text[:25],'programs':programs,'channels':sorted(channels),'ticks_per_beat':mid.ticks_per_beat})
+              except Exception as e:
+                  errors+=1
+              if n%1000==0: print('PROCESSED',n,'MATCHES',len(all_rows),'ERRORS',errors)
+
+          all_rows.sort(key=lambda x:x['score'])
+          # Collapse multiple tracks/windows from the same MIDI while retaining alternatives.
+          unique=[];seen=set()
+          for r in all_rows:
+              key=r['path']
+              if key in seen:continue
+              seen.add(key);unique.append(r)
+              if len(unique)>=500:break
+          pathlib.Path('work/results/midi_rankings.json').write_text(json.dumps(unique,indent=2,ensure_ascii=False))
+          pathlib.Path('work/results/midi_rankings.tsv').write_text('\n'.join(
+              f"{r['score']:.5f}\t{r['period_beats']:.3f}\t{r['jumps']}\t{r['resets']}\t{r['tail_drop']:.2f}\t{r['path']}\ttrack={r['track_index']}:{r['mode']}\tTEXT={' | '.join(r['track_text'][:6]+r['global_text'][:6])}"
+              for r in unique))
+          for rank,r in enumerate(unique[:100],1):
+              src=pathlib.Path(r['path']);dst=pathlib.Path('work/top_midis')/f"{rank:03d}__{src.name}";shutil.copy2(src,dst)
+          pathlib.Path('work/results/summary.json').write_text(json.dumps({'files_scanned':len(files),'raw_matches':len(all_rows),'unique_ranked':len(unique),'errors':errors},indent=2))
+          print(pathlib.Path('work/results/midi_rankings.tsv').read_text()[:30000])
+          PY
+
+      - name: Upload MIDI rankings
+        uses: actions/upload-artifact@v4
+        with:
+          name: large-midi-melody-results
+          path: |
+            work/results
+            work/top_midis
+          retention-days: 2
