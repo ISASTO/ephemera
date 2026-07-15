@@ -1,0 +1,122 @@
+name: Temporary personalized Top Songs melody corpus
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy librosa demucs
+
+      - name: Fetch personalized playlist tracks and screen previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/previews work/results work/top work/wavs work/separated
+          python - <<'PY'
+          import concurrent.futures as cf, json, pathlib, re, subprocess, time
+          import requests, numpy as np, librosa
+          S=requests.Session();S.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36'
+          playlists={
+            '2025':'37i9dQZEVXcXHWVVT0lfDq','2024':'37i9dQZF1FoyQGyinuuvRu',
+            '2023':'37i9dQZF1Fa1IIVtEpGUcU','2022':'37i9dQZF1F0sijgNaJdgit',
+            '2021':'37i9dQZF1EUMDoJuT8yJsl','2020':'37i9dQZF1ELWCvHl1C986G'}
+          tok=S.get('https://open.spotify.com/get_access_token?reason=transport&productType=web_player',timeout=30).json().get('accessToken')
+          if not tok: raise RuntimeError('no Spotify web token')
+          H={'Authorization':'Bearer '+tok,'User-Agent':S.headers['User-Agent']}
+          rows=[];errors={}
+          for year,pid in playlists.items():
+            url=f'https://api.spotify.com/v1/playlists/{pid}/tracks';offset=0;got=[]
+            while True:
+              r=S.get(url,headers=H,params={'limit':100,'offset':offset,'market':'US'},timeout=45)
+              if r.status_code!=200:
+                errors[year]={'status':r.status_code,'body':r.text[:1000]};break
+              d=r.json();items=d.get('items',[])
+              for it in items:
+                t=(it or {}).get('track') or {}; arts=t.get('artists') or []
+                if t.get('name') and arts: got.append({'year':year,'spotify_id':t.get('id'),'title':t['name'],'artist':arts[0]['name'],'artists':[a['name'] for a in arts],'release_date':((t.get('album') or {}).get('release_date'))})
+              if not d.get('next'):break
+              offset+=len(items)
+            print('PLAYLIST',year,len(got),errors.get(year));rows.extend(got)
+          # de-duplicate tracks while retaining years
+          ded={}
+          for r in rows:
+            k=(r['artist'].casefold(),r['title'].casefold());
+            if k not in ded:ded[k]={**r,'years':[r['year']]}
+            elif r['year'] not in ded[k]['years']:ded[k]['years'].append(r['year'])
+          rows=list(ded.values())
+          pathlib.Path('work/results/spotify_playlists.json').write_text(json.dumps({'tracks':rows,'errors':errors},indent=2,ensure_ascii=False))
+          print('UNIQUE',len(rows))
+
+          def resolve(row):
+            try:
+              d=S.get('https://itunes.apple.com/search',params={'term':f"{row['artist']} {row['title']}",'entity':'song','limit':50,'country':'US'},timeout=45).json()
+              norm=lambda x:re.sub(r'[^a-z0-9]+',' ',x.casefold()).strip()
+              exact=[x for x in d.get('results',[]) if norm(x.get('artistName',''))==norm(row['artist']) and norm(x.get('trackName',''))==norm(row['title']) and x.get('previewUrl')]
+              if not exact:
+                exact=[x for x in d.get('results',[]) if norm(row['artist']) in norm(x.get('artistName','')) and norm(row['title']) in norm(x.get('trackName','')) and x.get('previewUrl')]
+              if not exact:return None
+              x=exact[0];return {**row,'preview_url':x['previewUrl'],'apple_track_id':x.get('trackId')}
+            except Exception:return None
+          with cf.ThreadPoolExecutor(max_workers=14) as ex: resolved=[x for x in ex.map(resolve,rows) if x]
+          pathlib.Path('work/results/resolved.json').write_text(json.dumps(resolved,indent=2,ensure_ascii=False))
+          print('RESOLVED',len(resolved))
+          def slug(s):return re.sub(r'[^a-z0-9]+','-',s.casefold()).strip('-')[:70]
+          def dl(r):
+            p=pathlib.Path('work/previews')/f"{slug(r['artist'])}__{r['apple_track_id']}__{slug(r['title'])}.m4a"
+            try:
+              q=S.get(r['preview_url'],timeout=60);q.raise_for_status();p.write_bytes(q.content);return (r,p)
+            except Exception:return None
+          with cf.ThreadPoolExecutor(max_workers=16) as ex: downloaded=[x for x in ex.map(dl,resolved) if x]
+          qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84]);qpc=np.rint(np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88]))%12
+          w=np.array([1.4,1.4,1.25,.55,1.4,1.4,1.25,.55,1.4,1.4,.75,.55,.45,.45,.45]);sr=8000;hop=256;fps=sr/hop
+          def score(item):
+            r,p=item
+            try:
+              raw=subprocess.run(['ffmpeg','-v','error','-i',str(p),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True,check=True).stdout;y=np.frombuffer(raw,dtype='<f4')
+              C=librosa.feature.chroma_stft(y=y,sr=sr,n_fft=1024,hop_length=hop);C=np.maximum(C,0);C=C/(C.sum(0,keepdims=True)+1e-9);best=(-1,None)
+              for sc in np.arange(.72,1.351,.04):
+                rel=np.rint(qt*sc*fps).astype(int);starts=np.arange(max(0,C.shape[1]-rel[-1]-1));
+                if not len(starts):continue
+                cols=starts[:,None]+rel[None,:]
+                for tr in range(12):
+                  v=C[((qpc+tr)%12)[None,:],cols];mean=(v*w).sum(1)/w.sum(); thirds=np.array_split(np.arange(15),3);floor=np.min(np.stack([(v[:,z]*w[z]).sum(1)/w[z].sum() for z in thirds]),0);s=mean+.3*floor;k=int(np.argmax(s))
+                  if s[k]>best[0]:best=(float(s[k]),{'start':float(starts[k]/fps),'scale':float(sc),'transpose':tr})
+              return {**r,'filename':p.name,'score':best[0],**best[1]}
+            except Exception:return None
+          with cf.ThreadPoolExecutor(max_workers=8) as ex: ranked=[x for x in ex.map(score,downloaded) if x]
+          ranked.sort(key=lambda x:x['score'],reverse=True)
+          pathlib.Path('work/results/fullmix_rankings.json').write_text(json.dumps(ranked,indent=2,ensure_ascii=False))
+          pathlib.Path('work/results/fullmix_top.tsv').write_text('\n'.join(f"{x['score']:.6f}\t{x['artist']}\t{x['title']}\t{','.join(x['years'])}\t{x['filename']}" for x in ranked))
+          for x in ranked[:60]:
+            src=pathlib.Path('work/previews')/x['filename'];(pathlib.Path('work/top')/x['filename']).write_bytes(src.read_bytes())
+          print(pathlib.Path('work/results/fullmix_top.tsv').read_text()[:10000])
+          PY
+
+      - name: Isolate strongest candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in work/top/*.m4a; do b="$(basename "$f" .m4a)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -o work/separated work/wavs/*.wav
+
+      - name: Upload personalized corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: personalized-top-songs-corpus
+          path: |
+            work/results
+            work/top
+            work/separated/htdemucs/*/vocals.wav
+            work/separated/htdemucs/*/no_vocals.wav
+          retention-days: 1
