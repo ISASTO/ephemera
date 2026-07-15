@@ -143,6 +143,15 @@
       "pages": 8,
       "completed": "2026-05-27",
       "thumb": "thumb.jpg"
+    },
+    {
+      "id": "cure",
+      "title": "The Cure",
+      "description": "A miracle of modern medicine",
+      "ext": "jpg",
+      "pages": 8,
+      "completed": "2026-07-15",
+      "thumb": "thumb.jpg"
     }
   ]
 }
