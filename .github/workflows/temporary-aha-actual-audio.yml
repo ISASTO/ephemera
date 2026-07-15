@@ -1,0 +1,117 @@
+name: Temporary AHA actual-audio search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  recognize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct and verify exact cleaned whistle
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          mkdir -p work variants results
+          cat query/00.b64 query/01.b64 query/02.b64 query/03.b64 query/04.b64 query/05.b64 query/06.b64 > work/clean.b64
+          test "$(wc -c < work/clean.b64)" -eq 31448
+          base64 -d work/clean.b64 > work/clean.ogg
+          echo '3ca25bed926585c470eddae3706d01d4d69d0f9152a0fb077889aebb62c0ecf2  work/clean.ogg' | sha256sum -c -
+          ffprobe -v error -show_entries format=duration,size -of json work/clean.ogg | tee results/source-verification.json
+
+      - name: Build controlled WebM microphone variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          # AHA's browser microphone sends WebM/Opus. Silence padding mirrors a normal click-then-hum recording.
+          ffmpeg -v error -y -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/original.webm
+          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=0.92,adelay=450,apad=pad_dur=1.0' -t 14 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/slower8.webm
+          ffmpeg -v error -y -i work/clean.ogg -af 'atempo=1.08,adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/faster8.webm
+          ffmpeg -v error -y -i work/clean.ogg -af 'asetrate=48000*0.890899,aresample=48000,atempo=1.122462,adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/down2.webm
+          ffmpeg -v error -y -i work/clean.ogg -af 'asetrate=48000*1.122462,aresample=48000,atempo=0.890899,adelay=450,apad=pad_dur=1.0' -t 13 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/up2.webm
+          ffmpeg -v error -y -ss 0 -t 8.8 -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 11 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/first9.webm
+          ffmpeg -v error -y -ss 1.5 -t 9.2 -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 11 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/middle9.webm
+          ffmpeg -v error -y -ss 2.5 -i work/clean.ogg -af 'adelay=450,apad=pad_dur=1.0' -t 11 -ac 1 -ar 48000 -c:a libopus -b:a 40k variants/last9.webm
+          for f in variants/*.webm; do
+            ffprobe -v error -show_entries format=filename,duration,size -of compact "$f"
+          done | sort | tee results/variant-verification.txt
+
+      - name: Query the humming-recognition endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --quiet requests
+          cat > /tmp/recognize.py <<'PY'
+          import base64, json, pathlib, time
+          import requests
+
+          endpoint='https://www.doreso.com/humming'
+          headers={
+              'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Safari/537.36',
+              'Accept':'application/json, text/plain, */*',
+              'Content-Type':'application/json',
+              'Origin':'https://www.doreso.com',
+              'Referer':'https://www.doreso.com/',
+          }
+          order=['original','slower8','faster8','down2','up2','first9','middle9','last9']
+          rows=[]
+          session=requests.Session()
+          # Establish ordinary site cookies first.
+          try:
+              session.get('https://www.doreso.com/',headers=headers,timeout=30)
+          except Exception:
+              pass
+          for name in order:
+              path=pathlib.Path('variants')/(name+'.webm')
+              payload={'audio':base64.b64encode(path.read_bytes()).decode('ascii')}
+              rec={'variant':name,'bytes':path.stat().st_size}
+              try:
+                  r=session.post(endpoint,headers=headers,json=payload,timeout=90)
+                  rec['http_status']=r.status_code
+                  rec['raw_body']=r.text
+                  try:
+                      body=r.json()
+                  except Exception:
+                      body=None
+                  rec['response']=body
+                  data=(body or {}).get('data') if isinstance(body,dict) else None
+                  if isinstance(data,dict):
+                      rec.update({
+                          'title':data.get('title'),
+                          'artists':[a.get('name') for a in data.get('artists',[]) if isinstance(a,dict)],
+                          'score':data.get('score'),
+                          'release_date':data.get('release_date'),
+                          'duration_ms':data.get('duration_ms'),
+                          'play_offset_ms':data.get('play_offset_ms'),
+                          'isrc':(data.get('external_ids') or {}).get('isrc'),
+                          'acrid':data.get('acrid'),
+                          'result_from':data.get('result_from'),
+                      })
+              except Exception as e:
+                  rec['error']=repr(e)
+              rows.append(rec)
+              print(json.dumps({k:v for k,v in rec.items() if k not in ('raw_body','response')},ensure_ascii=False))
+              time.sleep(1.5)
+          pathlib.Path('results/responses.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False),encoding='utf-8')
+          pathlib.Path('results/summary.tsv').write_text('\n'.join(
+              f"{r.get('variant')}\t{r.get('score')}\t{','.join(r.get('artists') or [])}\t{r.get('title')}\t{r.get('release_date')}\t{r.get('play_offset_ms')}\t{r.get('http_status')}"
+              for r in rows),encoding='utf-8')
+          PY
+          python /tmp/recognize.py | tee results/console-results.txt
+          cat results/summary.tsv
+
+      - name: Upload recognition evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aha-actual-audio-results
+          path: results
+          retention-days: 1
