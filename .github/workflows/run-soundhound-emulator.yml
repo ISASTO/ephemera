@@ -19,6 +19,7 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm || true
 
       - name: Download SoundHound APK and prepare evidence directory
         shell: bash
@@ -32,19 +33,18 @@ jobs:
       - name: Boot emulator, install, and inspect app
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
-          target: default
+          api-level: 34
+          target: google_apis
           arch: x86_64
-          profile: pixel_6
+          profile: Nexus 6
           cores: 2
-          ram-size: 4096M
-          heap-size: 1024M
-          disk-size: 8192M
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none -no-audio
+          ram-size: 3072M
+          heap-size: 768M
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -euxo pipefail
             adb wait-for-device
+            adb shell getprop ro.build.version.release | tee evidence/android_version.txt
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
             adb shell settings put global animator_duration_scale 0
@@ -54,29 +54,23 @@ jobs:
             adb shell cmd appops set com.melodis.midomiMusicIdentifier.freemium RECORD_AUDIO allow || true
             adb shell am force-stop com.melodis.midomiMusicIdentifier.freemium
             adb shell am start -W -n com.melodis.midomiMusicIdentifier.freemium/com.soundhound.android.appcommon.activity.SoundHound | tee evidence/start.txt
-            sleep 12
+            sleep 15
             adb exec-out screencap -p > evidence/01-launch.png
-            adb shell uiautomator dump /sdcard/01.xml >/dev/null || true
-            adb pull /sdcard/01.xml evidence/01.xml >/dev/null || true
+            adb shell uiautomator dump /sdcard/01.xml || true
+            adb pull /sdcard/01.xml evidence/01.xml || true
             adb shell dumpsys activity activities > evidence/activities.txt
             adb shell dumpsys package com.melodis.midomiMusicIdentifier.freemium > evidence/package.txt
             adb shell logcat -d -v threadtime > evidence/logcat-launch.txt
 
-            # Dismiss common onboarding and consent surfaces by text where present.
-            for text in 'ACCEPT' 'Accept' 'AGREE' 'Agree' 'CONTINUE' 'Continue' 'NEXT' 'Next' 'NOT NOW' 'Not now' 'SKIP' 'Skip' 'ALLOW' 'Allow'; do
-              adb shell input text "$text" >/dev/null 2>&1 || true
+            # Tap likely onboarding controls and the large central recognition button, saving every state.
+            for spec in '540 1850 bottom' '540 1700 lower' '540 950 center' '540 600 upper'; do
+              set -- $spec; x=$1; y=$2; name=$3
+              adb shell input tap "$x" "$y" || true
+              sleep 6
+              adb exec-out screencap -p > "evidence/state-${name}.png"
+              adb shell uiautomator dump "/sdcard/state-${name}.xml" || true
+              adb pull "/sdcard/state-${name}.xml" "evidence/state-${name}.xml" || true
             done
-            # Try center-bottom and center-screen, then capture each resulting state.
-            adb shell input tap 540 1850 || true
-            sleep 4
-            adb exec-out screencap -p > evidence/02-bottom-tap.png
-            adb shell uiautomator dump /sdcard/02.xml >/dev/null || true
-            adb pull /sdcard/02.xml evidence/02.xml >/dev/null || true
-            adb shell input tap 540 950 || true
-            sleep 8
-            adb exec-out screencap -p > evidence/03-center-tap.png
-            adb shell uiautomator dump /sdcard/03.xml >/dev/null || true
-            adb pull /sdcard/03.xml evidence/03.xml >/dev/null || true
             adb shell logcat -d -v threadtime > evidence/logcat-after-taps.txt
             adb shell dumpsys window windows > evidence/windows.txt
             find evidence -type f -printf '%p %s\n' | sort | tee evidence/files.txt
