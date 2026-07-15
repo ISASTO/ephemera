@@ -1,0 +1,191 @@
+name: Temporary embedded-playlist melody corpus
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa beautifulsoup4
+          npm init -y >/dev/null
+          npm install --silent playwright
+          npx playwright install --with-deps chromium
+
+      - name: Scrape Spotify embeds and score previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results top-previews
+          cat > scrape.js <<'JS'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const ids = [
+            '0oD5aLzUQiIomu805F3xDH',
+            '1sDd3rGECTAiKVP8HrSuDR',
+            '4GnbtrjwT5KHtTS8fqlUju',
+            '4O9ipepBGe2yPtluBN9peZ',
+            '0KYyZmo05ynpxxWOhiaNUI',
+            '7CUjn0FBPI0vy1wSM3OUmO'
+          ];
+          (async()=>{
+            const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+            const page=await browser.newPage({viewport:{width:1400,height:1200}});
+            const all=[];
+            for(const id of ids){
+              const url=`https://open.spotify.com/embed/playlist/${id}`;
+              await page.goto(url,{waitUntil:'networkidle',timeout:90000});
+              await page.waitForTimeout(2500);
+              const title=await page.title();
+              const anchors=await page.locator('a[href*="/track/"]').evaluateAll((els,id)=>els.map((a,i)=>{
+                let row=a.closest('li') || a.closest('[role=row]') || a.parentElement?.parentElement?.parentElement || a.parentElement;
+                const artistLinks=row ? [...row.querySelectorAll('a[href*="/artist/"]')].map(x=>(x.textContent||'').trim()).filter(Boolean) : [];
+                return {playlist_id:id,index:i,title:(a.textContent||'').trim(),href:a.href,row_text:row?(row.innerText||'').trim():'',artists:artistLinks};
+              }),id);
+              let rows=anchors;
+              if(!rows.length){
+                rows=await page.locator('li').evaluateAll((els,id)=>els.map((e,i)=>({playlist_id:id,index:i,row_text:(e.innerText||'').trim(),title:'',href:'',artists:[]})).filter(x=>x.row_text),id);
+              }
+              fs.writeFileSync(`results/embed-${id}.html`,await page.content());
+              fs.writeFileSync(`results/embed-${id}.txt`,await page.locator('body').innerText());
+              fs.writeFileSync(`results/embed-${id}.json`,JSON.stringify({title,url,rows},null,2));
+              console.log('SCRAPED',id,title,'rows',rows.length);
+              all.push(...rows);
+            }
+            fs.writeFileSync('results/raw-tracks.json',JSON.stringify(all,null,2));
+            await browser.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          JS
+          NODE_PATH="$PWD/node_modules" node scrape.js
+
+          cat > screen.py <<'PY'
+          import concurrent.futures as cf
+          import json, pathlib, re, subprocess, unicodedata
+          import numpy as np
+          import requests, librosa
+
+          def norm(s):
+            return re.sub(r'[^a-z0-9]+',' ',unicodedata.normalize('NFKD',s or '').encode('ascii','ignore').decode().casefold()).strip()
+
+          raw=json.load(open('results/raw-tracks.json'))
+          tracks=[]
+          for x in raw:
+            title=(x.get('title') or '').strip(); artists=x.get('artists') or []
+            lines=[z.strip() for z in (x.get('row_text') or '').splitlines() if z.strip()]
+            if not title and len(lines)>=3:
+              # Common embed row: position, title, artist, duration.
+              title=lines[1] if lines[0].replace('.','').isdigit() else lines[0]
+              cand=[z for z in lines if z!=title and not re.fullmatch(r'\d{1,2}:\d{2}',z) and not z.replace('.','').isdigit()]
+              artists=cand[:1]
+            if not artists and lines:
+              try:
+                j=lines.index(title); cand=lines[j+1:]
+                artists=[z for z in cand if not re.fullmatch(r'\d{1,2}:\d{2}',z)][:1]
+              except ValueError: pass
+            artist=', '.join(artists).strip()
+            if title and artist: tracks.append({'title':title,'artist':artist,'playlist_id':x.get('playlist_id'),'spotify_href':x.get('href')})
+          d={}
+          for x in tracks:d.setdefault((norm(x['artist']),norm(x['title'])),x)
+          tracks=list(d.values())
+          print('PARSED UNIQUE TRACKS',len(tracks))
+          pathlib.Path('results/parsed-tracks.json').write_text(json.dumps(tracks,indent=2,ensure_ascii=False))
+
+          sess=requests.Session();sess.headers.update({'User-Agent':'Mozilla/5.0'})
+          def close(a,b):
+            a,b=norm(a),norm(b)
+            return a==b or (len(a)>=6 and (a in b or b in a))
+          def resolve(x):
+            try:
+              d=sess.get('https://api.deezer.com/search',params={'q':f'artist:"{x["artist"]}" track:"{x["title"]}"','limit':20},timeout=25).json()
+              for z in d.get('data',[]):
+                za=(z.get('artist') or {}).get('name','');zt=z.get('title_short') or z.get('title','')
+                if z.get('preview') and close(x['artist'],za) and close(x['title'],zt):return x|{'source':'deezer','url':z['preview'],'resolved_artist':za,'resolved_title':zt}
+            except Exception: pass
+            try:
+              d=sess.get('https://itunes.apple.com/search',params={'term':f'{x["artist"]} {x["title"]}','entity':'song','limit':50,'country':'US'},timeout=25).json()
+              for z in d.get('results',[]):
+                if z.get('previewUrl') and close(x['artist'],z.get('artistName','')) and close(x['title'],z.get('trackName','')):
+                  return x|{'source':'itunes','url':z['previewUrl'],'resolved_artist':z.get('artistName'),'resolved_title':z.get('trackName')}
+            except Exception: pass
+            return None
+          resolved=[]
+          with cf.ThreadPoolExecutor(max_workers=20) as ex:
+            for i,z in enumerate(ex.map(resolve,tracks),1):
+              if z:resolved.append(z)
+              if i%100==0:print('RESOLVED',i,len(resolved))
+          print('TOTAL RESOLVED',len(resolved))
+          pathlib.Path('results/resolved.json').write_text(json.dumps(resolved,indent=2,ensure_ascii=False))
+
+          # Dense pitch-class query from the clean take, in seconds after beat correction.
+          q=np.array([
+            [0.20,83.2],[0.34,84.1],[0.48,84.8],[0.70,85.5],[1.25,85.0],[1.75,85.1],[2.20,85.0],[2.68,89.2],[2.84,90.0],[3.15,93.0],
+            [3.58,85.1],[4.30,85.1],[5.18,85.0],[5.35,83.8],[5.52,83.1],[6.30,83.3],[6.43,89.5],[6.57,90.1],[6.78,91.9],[7.10,92.7],
+            [7.58,85.6],[8.30,85.0],[9.18,84.5],[9.35,83.3],[10.43,83.3],[10.57,90.3],[10.82,90.8],[11.18,92.8],
+            [11.46,84.9],[12.30,85.1],[13.18,84.8],[13.35,83.7],[14.30,83.4],[14.45,90.3],[14.68,91.4],[14.92,92.7],[15.12,91.0],[15.35,90.5],[15.78,90.2],
+            [16.45,90.9],[16.72,91.3],[16.88,92.5],[17.18,90.7],[17.48,90.3],[17.72,87.9]],float)
+          q[:,0]*=60/103.54;qt=q[:,0];qpc=np.rint(q[:,1]).astype(int)%12
+          variants={'full':np.arange(46),'first3':np.arange(0,28),'middle3':np.arange(10,40),'last2tag':np.arange(28,46),'cycle1':np.arange(4,10),'cycle2':np.arange(14,20),'cycle3':np.arange(23,28),'tag':np.arange(33,46)}
+          sr=8000;hop=256;fps=sr/hop
+          def decode(data):
+            p=subprocess.run(['ffmpeg','-v','error','-i','pipe:0','-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],input=data,capture_output=True)
+            if p.returncode:raise RuntimeError('decode')
+            return np.frombuffer(p.stdout,dtype='<f4')
+          def score_one(z):
+            try:
+              r=sess.get(z['url'],timeout=35);r.raise_for_status();data=r.content;y=decode(data)
+              if len(y)<sr*12:return None
+              yh=librosa.effects.harmonic(y,margin=2);C=librosa.feature.chroma_cqt(y=yh,sr=sr,hop_length=hop,n_chroma=12,bins_per_octave=24)
+              C=np.maximum(C,0);C/=C.sum(axis=0,keepdims=True)+1e-8
+              out={}
+              for name,idx in variants.items():
+                best=None
+                for scale in np.arange(.70,1.341,.04):
+                  rel=np.rint(qt[idx]*scale*fps).astype(int);span=rel[-1]+1
+                  if C.shape[1]<=span:continue
+                  starts=np.arange(0,C.shape[1]-span,2);cols=starts[:,None]+rel[None,:]
+                  for tr in range(12):
+                    vals=C[(qpc[idx]+tr)[None,:],cols];contrast=vals-(1-vals)/11
+                    mean=contrast.mean(1);p20=np.percentile(contrast,20,axis=1);strong=(vals>.13).mean(1);s=mean+.32*p20+.10*strong;k=int(np.argmax(s))
+                    rec={'score':float(s[k]),'start':float(starts[k]/fps),'scale':float(scale),'transpose':tr,'mean':float(mean[k]),'p20':float(p20[k]),'strong':float(strong[k])}
+                    if best is None or rec['score']>best['score']:best=rec
+                out[name]=best
+              vals=[out[k]['score'] for k in ('cycle1','cycle2','cycle3','tag') if out[k]];vals.sort(reverse=True)
+              partial=sum(vals[:2])/max(1,min(2,len(vals)))
+              comp=.54*out['full']['score']+.20*max(out['first3']['score'],out['middle3']['score'])+.26*partial
+              return {k:v for k,v in z.items() if k!='url'}|{'preview_url':z['url'],'composite':float(comp),'variants':out,'data':data}
+            except Exception:return None
+          scored=[]
+          with cf.ThreadPoolExecutor(max_workers=6) as ex:
+            futs=[ex.submit(score_one,z) for z in resolved]
+            for i,f in enumerate(cf.as_completed(futs),1):
+              r=f.result()
+              if r:scored.append(r)
+              if i%50==0:print('SCORED',i,len(scored))
+          scored.sort(key=lambda x:x['composite'],reverse=True)
+          for i,r in enumerate(scored[:100],1):
+            ext='.mp3' if r['source']=='deezer' else '.m4a';fn=f'{i:03d}__{norm(r["artist"]).replace(" ","-")[:45]}__{norm(r["title"]).replace(" ","-")[:65]}{ext}'
+            pathlib.Path('top-previews',fn).write_bytes(r.pop('data'));r['local_file']=fn
+          for r in scored[100:]:r.pop('data',None)
+          pathlib.Path('results/rankings.json').write_text(json.dumps(scored,indent=2,ensure_ascii=False))
+          pathlib.Path('results/top.tsv').write_text('\n'.join(f'{i+1}\t{r["composite"]:.6f}\t{r["artist"]}\t{r["title"]}\t{r.get("local_file","")}' for i,r in enumerate(scored[:300])))
+          print(pathlib.Path('results/top.tsv').read_text()[:20000])
+          PY
+          python screen.py
+
+      - name: Upload corpus results
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedded-playlist-corpus-results
+          path: |
+            results
+            top-previews
+          retention-days: 1
