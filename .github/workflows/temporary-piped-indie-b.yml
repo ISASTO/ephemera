@@ -28,7 +28,7 @@ jobs:
       - name: Search full vocal catalogs
         env:
           ARTISTS: '["beabadoobee","Japanese Breakfast","SASAMI","Wednesday","Bully","Palehound","Ratboys","Indigo De Souza"]'
-        run: python tools/piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+        run: PYTHONPATH=. python -m tools.piped_vocal_search_runner --artists-json "$ARTISTS" --query query/clean.ogg --work work
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
