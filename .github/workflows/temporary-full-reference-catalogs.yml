@@ -1,0 +1,137 @@
+name: Temporary full-song reference catalog search
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Install full-song search tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet yt-dlp requests numpy scipy librosa demucs
+
+      - name: Resolve and download full reference catalogs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/full work/results work/top work/wavs work/separated
+          python - <<'PY'
+          import concurrent.futures as cf, json, pathlib, re, subprocess, time
+          import requests
+          artists=['NewDad','Pearly Drops','Slow Pulp','Hatchie','Fazerdaze','Momma','Blondshell','Wisp','Just Mustard','Softcult','Crumb','Alvvays']
+          S=requests.Session(); S.headers['User-Agent']='Mozilla/5.0 Chrome/150 Safari/537.36'
+          rows=[]
+          for artist in artists:
+            try:d=S.get('https://itunes.apple.com/search',params={'term':artist,'entity':'song','limit':200,'country':'US'},timeout=45).json()
+            except Exception as e:print('CAT FAIL',artist,e);continue
+            seen=set()
+            for x in d.get('results',[]):
+              if x.get('artistName','').casefold()!=artist.casefold():continue
+              title=(x.get('trackName') or '').strip()
+              if not title:continue
+              # collapse editions unless the edition changes the melody substantially
+              base=re.sub(r'\s*[\(\[].*?[\)\]]\s*',' ',title.casefold());base=re.sub(r'\s+',' ',base).strip()
+              ed='acoustic' if 'acoustic' in title.casefold() else 'live' if 'live' in title.casefold() else 'remix' if 'remix' in title.casefold() else 'studio'
+              key=(base,ed)
+              if key in seen:continue
+              seen.add(key);rows.append({'artist':artist,'title':title,'apple_id':x.get('trackId'),'release_date':x.get('releaseDate')})
+            print('CAT',artist,len(seen))
+          pathlib.Path('work/results/catalog.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False))
+          print('TOTAL CATALOG',len(rows))
+          def slug(s):return re.sub(r'[^a-z0-9]+','-',s.casefold()).strip('-')[:75]
+          def one(r):
+            out=f"work/full/{slug(r['artist'])}__{r['apple_id']}__{slug(r['title'])}.%(ext)s"
+            query=f"ytsearch3:{r['artist']} {r['title']} official audio"
+            cmd=['yt-dlp','--no-playlist','--match-filter','duration >= 60 & duration <= 600','--extract-audio','--audio-format','m4a','--audio-quality','7','--max-filesize','25M','--no-warnings','--quiet','--print-json','-o',out,query]
+            try:
+              p=subprocess.run(cmd,capture_output=True,text=True,timeout=180)
+              if p.returncode:return None
+              lines=[x for x in p.stdout.splitlines() if x.strip().startswith('{')]
+              if not lines:return None
+              meta=json.loads(lines[-1]); files=list(pathlib.Path('work/full').glob(f"{slug(r['artist'])}__{r['apple_id']}__{slug(r['title'])}.*"))
+              if not files:return None
+              # avoid obvious covers, tutorials, reactions, and karaoke
+              yt=(meta.get('title') or '').casefold(); bad=['cover','karaoke','reaction','tutorial','instrumental remake','slowed','sped up','8d audio']
+              if any(b in yt for b in bad):
+                for f in files:f.unlink(missing_ok=True)
+                return None
+              return {**r,'filename':files[0].name,'youtube_title':meta.get('title'),'youtube_id':meta.get('id'),'duration':meta.get('duration'),'channel':meta.get('channel')}
+            except Exception as e:return None
+          # modest concurrency to avoid YouTube throttling
+          got=[]
+          with cf.ThreadPoolExecutor(max_workers=4) as ex:
+            for i,x in enumerate(ex.map(one,rows),1):
+              if x:got.append(x)
+              if i%25==0:print('DOWNLOADED',i,len(got))
+          pathlib.Path('work/results/downloaded.json').write_text(json.dumps(got,indent=2,ensure_ascii=False))
+          print('FULL SONGS',len(got))
+          PY
+
+      - name: Screen every point in every full song
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import concurrent.futures as cf, json, pathlib, subprocess, shutil
+          import numpy as np, librosa
+          meta=json.loads(pathlib.Path('work/results/downloaded.json').read_text())
+          by={x['filename']:x for x in meta}
+          qt=np.array([0,.68,1.39,1.83,2.41,3.11,3.80,4.19,4.73,5.43,6.30,6.51,7.20,7.62,7.84])
+          qpc=np.rint(np.array([85,83.5,90,93,85,83.5,90.5,93,85,83.5,91.5,90.5,91.5,90.5,88]))%12
+          w=np.array([1.45,1.45,1.3,.5,1.45,1.45,1.3,.5,1.45,1.45,.75,.5,.4,.4,.4])
+          sr=8000;hop=256;fps=sr/hop
+          patterns={'full':(qt,qpc,w),'first11':(qt[:11],qpc[:11],w[:11]),'two':(qt[:8],qpc[:8],w[:8])}
+          def decode(p):
+            r=subprocess.run(['ffmpeg','-v','error','-i',str(p),'-f','f32le','-ac','1','-ar',str(sr),'pipe:1'],capture_output=True,check=True)
+            return np.frombuffer(r.stdout,dtype='<f4')
+          def analyze(p):
+            try:
+              y=decode(p);C=librosa.feature.chroma_cqt(y=y,sr=sr,hop_length=hop,bins_per_octave=36,n_chroma=12);C=np.maximum(C,0);C=C/(C.sum(0,keepdims=True)+1e-9)
+              result={}
+              for name,(times,pcs,ww) in patterns.items():
+                best=(-1,None)
+                for sc in np.arange(.70,1.401,.035):
+                  rel=np.rint(times*sc*fps).astype(int); starts=np.arange(max(0,C.shape[1]-rel[-1]-1));
+                  if not len(starts):continue
+                  cols=starts[:,None]+rel[None,:]
+                  for tr in range(12):
+                    v=C[((pcs+tr)%12)[None,:],cols];mean=(v*ww).sum(1)/ww.sum(); thirds=np.array_split(np.arange(len(times)),min(3,len(times))); floor=np.min(np.stack([(v[:,z]*ww[z]).sum(1)/ww[z].sum() for z in thirds]),0);s=mean+.3*floor;k=int(np.argmax(s))
+                    if s[k]>best[0]:best=(float(s[k]),{'start':float(starts[k]/fps),'scale':float(sc),'transpose':tr,'mean':float(mean[k]),'floor':float(floor[k])})
+                result[name]={'score':best[0],**best[1]}
+              result['composite']=2*result['full']['score']+1.25*result['first11']['score']+.5*result['two']['score']
+              return {**by[p.name],'scores':result}
+            except Exception as e:return None
+          files=list(pathlib.Path('work/full').glob('*'))
+          with cf.ThreadPoolExecutor(max_workers=8) as ex: rows=[x for x in ex.map(analyze,files) if x]
+          rows.sort(key=lambda x:x['scores']['composite'],reverse=True)
+          pathlib.Path('work/results/full_rankings.json').write_text(json.dumps(rows,indent=2,ensure_ascii=False))
+          pathlib.Path('work/results/full_top.tsv').write_text('\n'.join(f"{x['scores']['composite']:.6f}\t{x['scores']['full']['score']:.6f}\t{x['scores']['full']['start']:.2f}\t{x['artist']}\t{x['title']}\t{x['youtube_title']}\t{x['filename']}" for x in rows))
+          print(pathlib.Path('work/results/full_top.tsv').read_text()[:16000])
+          for x in rows[:40]:
+            p=pathlib.Path('work/full')/x['filename'];shutil.copy2(p,pathlib.Path('work/top')/p.name)
+          PY
+
+      - name: Isolate top full-song vocals and guitar layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in work/top/*; do b="$(basename "${f%.*}")"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -o work/separated work/wavs/*.wav
+
+      - name: Upload compact full-song results
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-reference-catalog-results
+          path: |
+            work/results
+            work/separated/htdemucs/*/vocals.wav
+            work/separated/htdemucs/*/no_vocals.wav
+          retention-days: 1
