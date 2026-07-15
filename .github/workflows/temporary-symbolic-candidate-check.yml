@@ -1,0 +1,69 @@
+name: Verify symbolic melody candidates
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet numpy scipy librosa demucs soundfile
+      - name: Recover query and download candidate previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p query previews results
+          for n in 00 01 02 03; do
+            curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"
+          done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          curl -fL --retry 4 -o previews/portishead__the-rip.mp3 'https://p.scdn.co/mp3-preview/69277f1592adbe050dee13c34c11eaedb19939a2.mp3'
+          curl -fL --retry 4 -o previews/alvvays__adult-diversion.mp3 'https://p.scdn.co/mp3-preview/9a54639c6616a3042af0fb693ef2bff07edd4527.mp3'
+          curl -fL --retry 4 -o previews/claud__wish-you-were-gay.mp3 'https://p.scdn.co/mp3-preview/40a3b77ca0560e2405d03096a9b9014f9c97a61a.mp3'
+          curl -fL --retry 4 -o previews/beach-house__walk-in-the-park.mp3 'https://p.scdn.co/mp3-preview/e86e1526d7f0946cdfc60f4fb32dc357d7c9c22a.mp3'
+          for f in previews/*.mp3; do ffprobe -v error -show_entries format=duration,size -of compact "$f"; done | tee results/previews.txt
+      - name: Separate vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir wavs
+          for f in previews/*.mp3; do b="$(basename "$f" .mp3)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -n htdemucs -j 1 -o separated wavs/*.wav
+      - name: Compare continuous vocal contour
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,sys
+          sys.path.insert(0,'.')
+          import tools.full_vocal_contour_search as c
+          rows=[]
+          for v in pathlib.Path('separated/htdemucs').glob('*/vocals.wav'):
+            artist,title=v.parent.name.split('__',1)
+            rows.append({'artist':artist.replace('-',' '),'title':title.replace('-',' '),'filename':v.parent.name+'.mp3'})
+          # rank() expects the standard stem path derived from filename.
+          ranked=c.rank(rows,pathlib.Path('separated'),'query/clean.ogg',pathlib.Path('results'),workers=4)
+          c.package_top(ranked,pathlib.Path('results'),pathlib.Path('top_vocals'),n=10)
+          PY
+      - name: Upload verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: symbolic-candidate-verification
+          path: |
+            results
+            previews
+            top_vocals
+            separated/htdemucs/*/vocals.wav
+          retention-days: 2
