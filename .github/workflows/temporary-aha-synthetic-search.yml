@@ -24,7 +24,6 @@ jobs:
           import math, wave
           import numpy as np
 
-          # Dense pitch anchors measured from the clean take. Time values are seconds.
           anchors=np.array([
             [0.00,83.2],[0.14,84.1],[0.28,84.8],[0.50,85.5],
             [1.05,85.0],[1.55,85.1],[2.00,85.0],[2.48,89.2],[2.64,90.0],[2.95,93.0],
@@ -39,18 +38,15 @@ jobs:
 
           def render(name, semitones=0.0, tempo=1.0):
             sr=44100
-            # Compress to a 15-second microphone window while retaining a short lead-in.
             t_anchor=0.55+anchors[:,0]*tempo
             duration=min(17.5,t_anchor[-1]+1.0)
             n=int(duration*sr)
             t=np.arange(n)/sr
             midi=np.interp(t,t_anchor,anchors[:,1]+semitones,left=anchors[0,1]+semitones,right=anchors[-1,1]+semitones)
-            # Smooth glides. A light vibrato and harmonic give the recognizer a natural humming/whistle timbre.
             freq=440.0*2**((midi-69.0)/12.0)
             vibrato=1.0+0.0025*np.sin(2*np.pi*5.2*t)
             phase=2*np.pi*np.cumsum(freq*vibrato)/sr
             y=0.56*np.sin(phase)+0.16*np.sin(2*phase+0.2)+0.055*np.sin(3*phase+0.7)
-            # Gate around the first and last anchor, with small phrase breaths at major resets.
             env=np.ones_like(t)
             env*=np.clip((t-0.45)/0.10,0,1)
             env*=np.clip((duration-t)/0.30,0,1)
@@ -62,7 +58,7 @@ jobs:
             y=np.tanh(1.15*y)
             pcm=np.int16(np.clip(y,-1,1)*32767)
             with wave.open(f'query/{name}.wav','wb') as w:
-              w.setnchannels(1);w.setsampwidth(2);w.setframerate(sr);w.writeframes(pcm.tobytes())
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
 
           render('base',0,0.78)
           render('lower3',-3,0.78)
@@ -118,7 +114,7 @@ jobs:
             });
             page.on('response',async r=>{
               if(/api|hum|record|recogn|audio|upload|acr/i.test(r.url())){
-                let body='';try{const ct=(r.headers()['content-type']||'');if(/json|text/i.test(ct))body=(await r.text()).slice(0,30000);}catch(e){}
+                let body=''; try { const ct=(r.headers()['content-type']||''); if(/json|text/i.test(ct)) body=(await r.text()).slice(0,30000); } catch(e) {}
                 log.push({kind:'response',status:r.status(),url:r.url(),body});
               }
             });
@@ -144,13 +140,16 @@ jobs:
               }
               await page.screenshot({path:`${dir}/final.png`,fullPage:true});
               fs.writeFileSync(`${dir}/final.html`,await page.content());
-            }catch(e){log.push({kind:'fatal',text:String(e),stack:e.stack});try{await page.screenshot({path:`${dir}/fatal.png`,fullPage:true});}catch(_){} }
+            }catch(e){
+              log.push({kind:'fatal',text:String(e),stack:e.stack});
+              try{await page.screenshot({path:`${dir}/fatal.png`,fullPage:true});}catch(_){}
+            }
             fs.writeFileSync(`${dir}/events.json`,JSON.stringify(log,null,2));
             await browser.close();
           }
-          (async()=>{for(const v of variants)await one(v)})().catch(e=>{console.error(e);process.exit(1)});
+          (async()=>{for(const v of variants) await one(v)})().catch(e=>{console.error(e);process.exit(1)});
           JS
-          node /tmp/run.js
+          NODE_PATH="$PWD/node_modules" node /tmp/run.js | tee results/node.log
           find results -type f -printf '%p %s\n' | sort
 
       - name: Upload evidence
