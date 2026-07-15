@@ -1,0 +1,37 @@
+name: Temporary Piped modern indie search E
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Install search stack
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa demucs soundfile
+          mkdir -p tools query work
+          curl -fL --retry 4 -o tools/full_vocal_contour_search.py https://raw.githubusercontent.com/ISASTO/ephemera/temporary-smart-song-search/tools/full_vocal_contour_search.py
+          curl -fL --retry 4 -o tools/piped_vocal_search_runner.py https://raw.githubusercontent.com/ISASTO/ephemera/temporary-smart-song-search/tools/piped_vocal_search_runner.py
+          touch tools/__init__.py
+          for n in 00 01 02 03; do curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"; done
+          cat query/chunk_*.b64 > query/full.b64; base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+      - name: Search modern catalogs
+        env:
+          ARTISTS: '["Beach Bunny","The Beths","MUNA","Phoebe Bridgers","Sharon Van Etten","Charly Bliss","Soccer Mommy","Alvvays"]'
+        run: PYTHONPATH=. python -m tools.piped_vocal_search_runner --artists-json "$ARTISTS" --query query/clean.ogg --work work
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piped-modern-e-results
+          path: |
+            work/results
+            work/top_vocals
+          retention-days: 2
