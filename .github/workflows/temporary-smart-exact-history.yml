@@ -1,0 +1,69 @@
+name: Smart exact-history full-song check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  exact-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet --upgrade yt-dlp requests numpy scipy librosa demucs soundfile
+
+      - name: Recover clean whistle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p query work/audio work/separated work/results work/top_vocals
+          for n in 00 01 02 03; do
+            curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"
+          done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 query/clean.ogg | cut -d. -f1)" -ge 10
+
+      - name: Download exact full tracks and rank isolated vocals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,sys
+          sys.path.insert(0,'.')
+          from tools.full_vocal_contour_search import download_catalog,separate_vocals,rank,package_top
+          targets=[
+            {'artist':'The Marías','title':'Little by Little','apple_id':'recent01'},
+            {'artist':'The Marías','title':'All I Really Want Is You','apple_id':'recent02'},
+            {'artist':'The Marías','title':'Hush','apple_id':'recent03'},
+            {'artist':'The Marías','title':'Calling U Back','apple_id':'recent04'},
+            {'artist':'Not For Radio','title':'Puddles','apple_id':'recent05'},
+            {'artist':'Not For Radio','title':'Water On Your Nose','apple_id':'recent06'},
+            {'artist':'Not For Radio','title':'Moment','apple_id':'recent07'},
+            {'artist':'Clairo','title':'Bambi','apple_id':'recent08'},
+            {'artist':'Strawberry Guy','title':'As We Bloom','apple_id':'recent09'}
+          ]
+          work=pathlib.Path('work');audio=work/'audio';sep=work/'separated';out=work/'results';top=work/'top_vocals'
+          downloaded=download_catalog(targets,audio,out,workers=4)
+          separate_vocals(downloaded,audio,sep,batch_size=12)
+          rows=rank(downloaded,sep,'query/clean.ogg',out,workers=4)
+          package_top(rows,out,top,n=12)
+          PY
+
+      - name: Upload exact-history results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-exact-history-results
+          path: |
+            work/results
+            work/top_vocals
+          retention-days: 2
