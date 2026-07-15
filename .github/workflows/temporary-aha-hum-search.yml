@@ -14,25 +14,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decode and prepare the real cleaned whistle
+      - name: Recover and prepare the real cleaned whistle
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           mkdir -p query results
-          base64 -d temporary-query/clean_harmonic.ogg.b64 > query/clean.ogg
-          ffprobe -v error -show_entries format=duration,size -of json query/clean.ogg | tee results/source-verification.json
-          test -s query/clean.ogg
+          : > results/recovery-log.txt
 
-          # Original timing, with enough leading silence for the fake microphone to initialize.
-          ffmpeg -v error -y -i query/clean.ogg -af 'adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/clean.wav
-          # Mild tempo variants, preserving pitch.
-          ffmpeg -v error -y -i query/clean.ogg -af 'atempo=0.94,adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/slower.wav
-          ffmpeg -v error -y -i query/clean.ogg -af 'atempo=1.06,adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/faster.wav
-          # Approximately +/-2 semitones while compensating duration.
-          ffmpeg -v error -y -i query/clean.ogg -af 'asetrate=44100*0.890899,aresample=44100,atempo=1.122463,adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/lower2.wav
-          ffmpeg -v error -y -i query/clean.ogg -af 'asetrate=44100*1.122463,aresample=44100,atempo=0.890899,adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/upper2.wav
+          recover() {
+            label="$1"; source_file="$2"; out="query/${label}.ogg"
+            echo "TRY $label FROM $source_file" | tee -a results/recovery-log.txt
+            base64 --decode --ignore-garbage "$source_file" > "$out" 2>>results/recovery-log.txt || true
+            wc -c "$source_file" "$out" | tee -a results/recovery-log.txt
+            if ffprobe -v error -show_entries format=duration,size -of json "$out" > "results/${label}-probe.json" 2>>results/recovery-log.txt; then
+              cp "$out" query/source.ogg
+              echo "VALID $label" | tee -a results/recovery-log.txt
+              return 0
+            fi
+            echo "INVALID $label" | tee -a results/recovery-log.txt
+            return 1
+          }
+
+          recovered=0
+          recover harmonic temporary-query/clean_harmonic.ogg.b64 && recovered=1
+          if [ "$recovered" -eq 0 ]; then recover exact temporary-query/exact_00.b64 && recovered=1; fi
+          if [ "$recovered" -eq 0 ]; then
+            cat temporary-query/chunk_*.b64 > query/chunks.b64
+            recover chunks query/chunks.b64 && recovered=1
+          fi
+          if [ "$recovered" -eq 0 ]; then
+            echo 'NO VALID AUDIO SOURCE' | tee -a results/recovery-log.txt
+            exit 1
+          fi
+
+          ffprobe -v error -show_entries format=duration,size -of json query/source.ogg | tee results/source-verification.json
+          set -euo pipefail
+          ffmpeg -v error -y -i query/source.ogg -af 'adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/clean.wav
+          ffmpeg -v error -y -i query/source.ogg -af 'atempo=0.94,adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/slower.wav
+          ffmpeg -v error -y -i query/source.ogg -af 'atempo=1.06,adelay=850,apad=pad_dur=7' -t 22 -ac 1 -ar 44100 -c:a pcm_s16le query/faster.wav
           for f in query/*.wav; do ffprobe -v error -show_entries format=duration,size -of compact "$f"; done | tee results/query-info.txt
 
       - name: Install Playwright Chromium
@@ -49,23 +70,19 @@ jobs:
           const { chromium } = require('playwright');
           const fs = require('fs');
           const path = require('path');
-          const variants = ['clean','slower','faster','lower2','upper2'];
+          const variants = ['clean','slower','faster'];
           const origin = 'https://www.doreso.com';
           fs.mkdirSync('results',{recursive:true});
-
           async function one(name) {
-            const dir=`results/${name}`;
-            fs.mkdirSync(dir,{recursive:true});
+            const dir=`results/${name}`; fs.mkdirSync(dir,{recursive:true});
             const browser=await chromium.launch({headless:true,args:[
               '--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',
               `--use-file-for-fake-audio-capture=${path.resolve(`query/${name}.wav`)}`,
               '--autoplay-policy=no-user-gesture-required','--disable-blink-features=AutomationControlled','--no-sandbox'
             ]});
-            const context=await browser.newContext({viewport:{width:1440,height:1100},locale:'en-US',
-              userAgent:'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'});
+            const context=await browser.newContext({viewport:{width:1440,height:1100},locale:'en-US',userAgent:'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'});
             await context.grantPermissions(['microphone'],{origin});
-            const page=await context.newPage();
-            const log=[];
+            const page=await context.newPage(), log=[];
             page.on('console',m=>log.push({kind:'console',type:m.type(),text:m.text()}));
             page.on('pageerror',e=>log.push({kind:'pageerror',text:String(e)}));
             page.on('request',r=>{if(/api|hum|record|recogn|audio|upload|acr/i.test(r.url()))log.push({kind:'request',method:r.method(),url:r.url(),post:(r.postData()||'').slice(0,5000)})});
@@ -79,29 +96,23 @@ jobs:
               await page.locator('.rf-idle__ring').click({force:true,position:{x:52,y:52}});
               log.push({kind:'microphone-clicked'});
               await page.waitForTimeout(1200);
-              await page.screenshot({path:`${dir}/01-recording.png`,fullPage:true});
               for(let i=0;i<28;i++) {
                 await page.waitForTimeout(1500);
                 const text=await page.locator('body').innerText();
                 const html=await page.locator('section.app-area').innerHTML().catch(()=> '');
                 log.push({kind:'state',sec:(i+1)*1.5,text:text.slice(0,14000),app:html.slice(0,18000)});
-                if(i%4===3) await page.screenshot({path:`${dir}/state-${String(i+1).padStart(2,'0')}.png`,fullPage:true});
+                if(i%5===4) await page.screenshot({path:`${dir}/state-${String(i+1).padStart(2,'0')}.png`,fullPage:true});
               }
               fs.writeFileSync(`${dir}/final.txt`,await page.locator('body').innerText());
               fs.writeFileSync(`${dir}/final.html`,await page.content());
               await page.screenshot({path:`${dir}/final.png`,fullPage:true});
-            } catch(e) {
-              log.push({kind:'fatal',text:String(e),stack:e.stack});
-              try{await page.screenshot({path:`${dir}/fatal.png`,fullPage:true})}catch(_){}
-            }
+            } catch(e) {log.push({kind:'fatal',text:String(e),stack:e.stack});try{await page.screenshot({path:`${dir}/fatal.png`,fullPage:true})}catch(_){} }
             fs.writeFileSync(`${dir}/events.json`,JSON.stringify(log,null,2));
-            await context.close();
-            await browser.close();
+            await context.close(); await browser.close();
           }
           (async()=>{for(const v of variants)await one(v)})().catch(e=>{console.error(e);process.exit(1)});
           JS
           NODE_PATH="$PWD/node_modules" node /tmp/aha-real.js | tee results/node.log
-          find results -type f -printf '%p %s\n' | sort
 
       - name: Upload real-whistle recognition evidence
         if: always()
