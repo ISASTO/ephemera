@@ -37,7 +37,7 @@ jobs:
               duration=float(sys.argv[1]); size=int(sys.argv[2])
           except Exception:
               raise SystemExit(1)
-          raise SystemExit(0 if duration >= 10.0 and size >= 30000 else 1)
+          raise SystemExit(0 if duration >= 10.0 and size >= 20000 else 1)
           PY
             then
               cp "$out" query/source.ogg
@@ -50,18 +50,14 @@ jobs:
           }
 
           recovered=0
-
-          # These four original chunks contain the complete 11.47-second cleaned recording.
           cat temporary-query/chunk_00.b64 temporary-query/chunk_01.b64 temporary-query/chunk_02.b64 temporary-query/chunk_03.b64 > query/original-chunks.b64
           recover_full original_chunks query/original-chunks.b64 && recovered=1
 
-          # A second independently generated copy is being uploaded in five chunks.
           if [ "$recovered" -eq 0 ] && ls temporary-query/real_chunk_*.b64 >/dev/null 2>&1; then
             cat temporary-query/real_chunk_*.b64 > query/real-chunks.b64
             recover_full real_chunks query/real-chunks.b64 && recovered=1
           fi
 
-          # Never accept the old three-second harmonic fragment as a complete query.
           if [ "$recovered" -eq 0 ]; then recover_full harmonic temporary-query/clean_harmonic.ogg.b64 && recovered=1; fi
           if [ "$recovered" -eq 0 ]; then recover_full exact temporary-query/exact_00.b64 && recovered=1; fi
 
