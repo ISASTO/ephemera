@@ -1,0 +1,89 @@
+name: Temporary Naked and Famous melody check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Install and recover query
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet requests numpy scipy librosa demucs soundfile
+          mkdir -p tools query work/audio work/results
+          curl -fL --retry 4 -o tools/full_vocal_contour_search.py https://raw.githubusercontent.com/ISASTO/ephemera/temporary-smart-song-search/tools/full_vocal_contour_search.py
+          touch tools/__init__.py
+          for n in 00 01 02 03; do curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"; done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+      - name: Fetch candidate previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import requests,re,json,pathlib
+          targets=[('The Naked and Famous','Young Blood'),('The Naked and Famous','Punching in a Dream'),('The Naked and Famous','Girls Like You'),('The Naked and Famous','Hearts Like Ours')]
+          s=requests.Session();s.headers['User-Agent']='Mozilla/5.0 Chrome/150'
+          norm=lambda x:re.sub(r'[^a-z0-9]+',' ',(x or '').casefold()).strip();slug=lambda x:re.sub(r'[^a-z0-9]+','-',x.casefold()).strip('-')
+          rows=[]
+          for a,t in targets:
+            d=s.get('https://itunes.apple.com/search',params={'term':f'{a} {t}','entity':'song','limit':100,'country':'US'},timeout=45).json()
+            xs=[x for x in d.get('results',[]) if norm(x.get('artistName'))==norm(a) and norm(x.get('trackName'))==norm(t) and x.get('previewUrl')]
+            if not xs: print('MISS',a,t);continue
+            x=xs[0];fn=f'{slug(a)}__{slug(t)}.m4a';r=s.get(x['previewUrl'],timeout=60);r.raise_for_status();pathlib.Path('work/audio',fn).write_bytes(r.content)
+            rows.append({'artist':a,'title':t,'filename':fn,'preview_url':x['previewUrl']})
+          pathlib.Path('work/results/downloaded.json').write_text(json.dumps(rows,indent=2));assert len(rows)>=3
+          PY
+      - name: Separate vocals and compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/wavs
+          for f in work/audio/*.m4a; do b="$(basename "$f" .m4a)"; ffmpeg -v error -y -i "$f" -ar 44100 -ac 2 "work/wavs/${b}.wav"; done
+          python -m demucs --two-stems=vocals -n htdemucs -j 1 -o work/separated work/wavs/*.wav
+          PYTHONPATH=. python - <<'PY'
+          import json,pathlib
+          import tools.full_vocal_contour_search as c
+          rows=json.loads(pathlib.Path('work/results/downloaded.json').read_text())
+          c.rank(rows,pathlib.Path('work/separated'),'query/clean.ogg',pathlib.Path('work/results'),workers=3)
+          PY
+      - name: Strict repeated-rise check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,pathlib,numpy as np,librosa
+          from scipy import signal
+          rows=json.loads(pathlib.Path('work/results/downloaded.json').read_text());low=np.array([1.82,4.20,6.28,8.68]);high=np.array([2.48,4.78,7.12,9.30]);reset=np.array([2.78,5.12,7.48]);expected=np.array([7.8,9.3,9.2,8.2])
+          def track(p):
+            y,sr=librosa.load(p,sr=12000,mono=True);y=signal.sosfiltfilt(signal.butter(4,[120,2200],btype='bandpass',fs=sr,output='sos'),y);y=librosa.effects.harmonic(y,margin=2)
+            f0,_,pr=librosa.pyin(y,fmin=librosa.note_to_hz('A2'),fmax=librosa.note_to_hz('C6'),sr=sr,frame_length=2048,hop_length=240,fill_na=np.nan);m=librosa.hz_to_midi(f0);t=librosa.times_like(m,sr=sr,hop_length=240);m[pr<.48]=np.nan;return t,m
+          def sample(t,m,x):return np.array([np.nanmedian(m[(t>=z-.12)&(t<=z+.12)&np.isfinite(m)]) if ((t>=z-.12)&(t<=z+.12)&np.isfinite(m)).sum() else np.nan for z in x])
+          out=[]
+          for r in rows:
+            v=pathlib.Path('work/separated/htdemucs')/pathlib.Path(r['filename']).stem/'vocals.wav';best=None
+            t,m=track(v)
+            for sc in np.arange(.72,1.36,.025):
+              for st in np.arange(0,max(.01,t[-1]-9.5*sc),.05):
+                j=sample(t,m,st+high*sc)-sample(t,m,st+low*sc);d=sample(t,m,st+high[:3]*sc)-sample(t,m,st+reset*sc);av=np.isfinite(j);good=(j>=5.5)&(j<=12.5)&av;rg=np.isfinite(d)
+                if av.sum()<3 or good.sum()<3 or rg.sum()<2 or (d[rg]>=4.5).sum()<2:continue
+                score=float(np.mean(np.abs(j[av]-expected[av]))+.35*np.std(j[av]-expected[av])+.55*np.mean(np.maximum(0,5.5-d[rg]))+2*(1-av.mean())+.8*(4-good.sum()))
+                rec={'score':score,'start':float(st),'scale':float(sc),'jumps':j.tolist(),'reset_drops':d.tolist(),'good_jumps':int(good.sum())}
+                if best is None or score<best['score']:best=rec
+            out.append({**r,'strict':best or {'score':999,'good_jumps':0}})
+          out.sort(key=lambda x:x['strict']['score']);pathlib.Path('work/results/strict.json').write_text(json.dumps(out,indent=2));pathlib.Path('work/results/strict.tsv').write_text('\n'.join(f"{x['strict']['score']:.4f}\t{x['strict']['good_jumps']}\t{x['artist']}\t{x['title']}\t{x['strict'].get('jumps')}" for x in out));print(pathlib.Path('work/results/strict.tsv').read_text())
+          PY
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naked-famous-melody-results
+          path: work/results
+          retention-days: 2
