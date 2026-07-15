@@ -1,0 +1,49 @@
+name: Smart underscores exact check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  underscores-exact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet --upgrade requests numpy scipy librosa demucs soundfile
+
+      - name: Recover clean whistle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p query work
+          for n in 00 01 02 03; do
+            curl -fL --retry 4 -o "query/chunk_${n}.b64" "https://raw.githubusercontent.com/ISASTO/ephemera/temporary-playlist-melody-corpus/temporary-query/chunk_${n}.b64"
+          done
+          cat query/chunk_*.b64 > query/full.b64
+          base64 --decode --ignore-garbage query/full.b64 > query/clean.ogg || true
+          test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 query/clean.ogg | cut -d. -f1)" -ge 10
+
+      - name: Rank exact recently played tracks
+        env:
+          TARGETS: '[{"artist":"underscores","title":"Wish U Well","apple_id":"recent10","preview_url":"https://p.scdn.co/mp3-preview/585a29c53eb5005a19648e169c39853a52793998.mp3"},{"artist":"underscores","title":"Hollywood Forever","apple_id":"recent11","preview_url":"https://p.scdn.co/mp3-preview/6e66b3dfdf31ea0a72a88faba5d4b222297ffc50.mp3"}]'
+        run: |
+          python piped_vocal_search_runner.py --targets-json "$TARGETS" --query query/clean.ogg --work work
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-underscores-exact-results
+          path: |
+            work/results
+            work/top_vocals
+          retention-days: 2
