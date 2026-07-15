@@ -36,7 +36,7 @@ jobs:
         env:
           TARGETS: '[{"artist":"The Marías","title":"Little by Little","apple_id":"recent01"},{"artist":"The Marías","title":"All I Really Want Is You","apple_id":"recent02"},{"artist":"The Marías","title":"Hush","apple_id":"recent03"},{"artist":"The Marías","title":"Calling U Back","apple_id":"recent04"},{"artist":"Not For Radio","title":"Puddles","apple_id":"recent05"},{"artist":"Not For Radio","title":"Water On Your Nose","apple_id":"recent06"},{"artist":"Not For Radio","title":"Moment","apple_id":"recent07"},{"artist":"Clairo","title":"Bambi","apple_id":"recent08"},{"artist":"Strawberry Guy","title":"As We Bloom","apple_id":"recent09"}]'
         run: |
-          python tools/piped_vocal_search_runner.py --targets-json "$TARGETS" --query query/clean.ogg --work work
+          python piped_vocal_search_runner.py --targets-json "$TARGETS" --query query/clean.ogg --work work
 
       - name: Upload exact-history results
         if: always()
