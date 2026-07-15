@@ -41,7 +41,7 @@ jobs:
         env:
           ARTISTS: '["The Marías","Not For Radio","Clairo","Suzy Sheer","Wallice","ggwendolyn","spill tab","daine","Somewhere Special","anna luna","Brothel in Belize","Sarah Kinsley","Oklou","Snow Strippers","Eartheater","Wisp"]'
         run: |
-          python tools/piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
+          python piped_vocal_search_runner.py --artists-json "$ARTISTS" --query query/clean.ogg --work work
 
       - name: Upload ranked results
         if: always()
